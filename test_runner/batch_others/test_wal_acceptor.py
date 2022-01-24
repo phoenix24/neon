@@ -435,7 +435,7 @@ class ProposerPostgres(PgProtocol):
     def initdb(self):
         """ Run initdb """
 
-        args = ["initdb", "-U", "zenith_admin", "-D", self.pg_data_dir_path()]
+        args = ["initdb", "-U", "zenith_admin", "-D", self.pg_data_dir_path(), "--data-checksums"]
         self.pg_bin.run(args)
 
     def start(self):

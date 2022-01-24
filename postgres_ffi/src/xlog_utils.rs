@@ -488,6 +488,7 @@ mod tests {
         println!("Data directory '{}'", data_dir.display());
         let initdb_output = Command::new(initdb_path)
             .args(&["-D", data_dir.to_str().unwrap()])
+            .arg("--data-checksums")
             .arg("--no-instructions")
             .arg("--no-sync")
             .env_clear()
