@@ -100,6 +100,7 @@ A single virtual environment with all dependencies is described in the single `P
       ```
 - Install `poetry`
     - Exact version of `poetry` is not important, see installation instructions available at poetry's [website](https://python-poetry.org/docs/#installation)`.
+- Optional: you can specify which `python` to use in the virtual environment for Zenith by running `poetry env use /path/to/python`, e.g. `poetry env use python3.7` if it's installed like above.
 - Install dependencies via `./scripts/pysync`. Note that CI uses Python 3.7 so if you have different version some linting tools can yield different result locally vs in the CI.
 
 Run `poetry shell` to activate the virtual environment.
