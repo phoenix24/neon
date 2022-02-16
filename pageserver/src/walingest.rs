@@ -39,6 +39,7 @@ use postgres_ffi::xlog_utils::*;
 use postgres_ffi::TransactionId;
 use postgres_ffi::{pg_constants, CheckPoint};
 use zenith_utils::lsn::Lsn;
+use zenith_utils::pg_checksum_page::pg_checksum_page;
 
 static ZERO_PAGE: Bytes = Bytes::from_static(&[0u8; 8192]);
 
@@ -305,6 +306,9 @@ impl<'a, R: Repository> WalIngest<'a, R> {
             }
             image[0..4].copy_from_slice(&((lsn.0 >> 32) as u32).to_le_bytes());
             image[4..8].copy_from_slice(&(lsn.0 as u32).to_le_bytes());
+            image[8..10].copy_from_slice(&[0u8; 2]);
+            let checksum = pg_checksum_page(&image, blk.blkno);
+            image[8..10].copy_from_slice(&checksum.to_le_bytes());
             assert_eq!(image.len(), pg_constants::BLCKSZ as usize);
             self.put_rel_page_image(modification, rel, blk.blkno, image.freeze())?;
         } else {
