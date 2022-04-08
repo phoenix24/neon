@@ -85,18 +85,21 @@ The connection URL looks like this:
 
 By default, this connects you to the primary PostgreSQL instance
 running on the "main" branch in the named cluster [3]. However, you can
-change that by specifying options in the connection URL:
+change that by specifying options in the connection URL. The following
+options are supported:
 
-- branch
-- timestamp or LSN
-- snapshot name
-- read replica
-- new read replica dedicated for the connection
+| option name  | Description                                                                                       | Examples                                            |
+| ---          | ---                                                                                               | ---                                                 |
+| cluster      | Cluster name                                                                                      | cluster:myproject                                   |
+| branch       | Branch name                                                                                       | branch:main                                         |
+| timestamp    | Connect to an instance at given point-in-time.                                                    | timestamp:2022-04-08 timestamp:2022-04-08T11:42:16Z |
+| lsn          | Connect to an instance at given LSN                                                               | lsn:0/12FF0420                                      |
+| read-replica | Connect to a read-replica. If the parameter is 'new', a new instance is created for this session. | read-replica read-replica:new                       |
 
-For example, to read the database as it was on Mar 31, 2022, you could
+For example, to read branch 'testing' as it was on Mar 31, 2022, you could
 specify a timestamp in the connection URL [4]:
 
-    postgres://alice@cluster-1234.db.zenith.tech/postgres?options=timestamp:2022-03-31
+    postgres://alice@cluster-1234.db.zenith.tech/postgres?options=branch:testing,timestamp:2022-03-31
 
 Connecting with cluster name and options can be disabled in the UI. If
 disabled, you can only connect using a pre-defined endpoint.
