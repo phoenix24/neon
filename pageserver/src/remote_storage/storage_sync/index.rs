@@ -12,7 +12,6 @@ use std::{
 
 use anyhow::{bail, ensure, Context};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 use tracing::*;
 use zenith_utils::{
     lsn::Lsn,
@@ -58,11 +57,11 @@ pub struct RemoteTimelineIndex {
 }
 
 /// A wrapper to synchrnize access to the index, should be created and used before dealing with any [`RemoteTimelineIndex`].
-pub struct RemoteIndex(Arc<RwLock<RemoteTimelineIndex>>);
+pub struct RemoteIndex(Arc<tokio::sync::Mutex<RemoteTimelineIndex>>);
 
 impl RemoteIndex {
     pub fn empty() -> Self {
-        Self(Arc::new(RwLock::new(RemoteTimelineIndex {
+        Self(Arc::new(tokio::sync::Mutex::new(RemoteTimelineIndex {
             timeline_entries: HashMap::new(),
         })))
     }
@@ -87,15 +86,15 @@ impl RemoteIndex {
             }
         }
 
-        Self(Arc::new(RwLock::new(index)))
+        Self(Arc::new(tokio::sync::Mutex::new(index)))
     }
 
-    pub async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, RemoteTimelineIndex> {
-        self.0.read().await
+    pub async fn read(&self) -> tokio::sync::MutexGuard<'_, RemoteTimelineIndex> {
+        self.0.lock().await
     }
 
-    pub async fn write(&self) -> tokio::sync::RwLockWriteGuard<'_, RemoteTimelineIndex> {
-        self.0.write().await
+    pub async fn write(&self) -> tokio::sync::MutexGuard<'_, RemoteTimelineIndex> {
+        self.0.lock().await
     }
 }
 
