@@ -31,7 +31,9 @@ COPY . .
 
 # Show build caching stats to check if it was used in the end.
 # Has to be the part of the same RUN since cachepot daemon is killed in the end of this RUN, loosing the compilation stats.
-RUN cargo build --release && /usr/local/cargo/bin/cachepot -s
+RUN rustup install 1.58
+RUN cargo +1.58 install --locked tokio-console
+RUN RUSTFLAGS="--cfg tokio_unstable" cargo +1.58 build --release --bin pageserver --bin safekeeper --bin proxy && /usr/local/cargo/bin/cachepot -s
 
 # Build final image
 #
