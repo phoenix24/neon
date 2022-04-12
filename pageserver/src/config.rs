@@ -180,7 +180,6 @@ struct PageServerConfigBuilder {
 
     auth_type: BuilderValue<AuthType>,
 
-    //
     auth_validation_public_key_path: BuilderValue<Option<PathBuf>>,
     remote_storage_config: BuilderValue<Option<RemoteStorageConfig>>,
 

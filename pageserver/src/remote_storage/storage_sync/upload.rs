@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use tracing::{debug, error, warn};
+use tracing::{debug, error, warn, info};
 
 use crate::{
     config::PageServerConf,
@@ -33,7 +33,7 @@ pub(super) async fn upload_timeline_checkpoint<
     new_checkpoint: NewCheckpoint,
     retries: u32,
 ) -> Option<bool> {
-    debug!("Uploading checkpoint for sync id {}", sync_id);
+    info!("Uploading checkpoint for sync id {}", sync_id);
     let new_upload_lsn = new_checkpoint.metadata.disk_consistent_lsn();
 
     let index = &remote_assets.1;
@@ -43,8 +43,9 @@ pub(super) async fn upload_timeline_checkpoint<
         timeline_id,
     } = sync_id;
     let timeline_dir = config.timeline_path(&timeline_id, &tenant_id);
-
+    info!("upload_timeline_checkpoint pre index read");
     let index_read = index.read().await;
+    info!("upload_timeline_checkpoint post index read");
     let remote_timeline = match index_read.timeline_entry(&sync_id) {
         None => None,
         Some(entry) => match entry.inner() {

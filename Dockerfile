@@ -32,7 +32,7 @@ COPY . .
 # Show build caching stats to check if it was used in the end.
 # Has to be the part of the same RUN since cachepot daemon is killed in the end of this RUN, loosing the compilation stats.
 RUN rustup install 1.58
-RUN cargo +1.58 install --locked tokio-console
+# RUN cargo +1.58 install --locked tokio-console
 RUN RUSTFLAGS="--cfg tokio_unstable" cargo +1.58 build --release --bin pageserver --bin safekeeper --bin proxy && /usr/local/cargo/bin/cachepot -s
 
 # Build final image
@@ -54,6 +54,7 @@ RUN set -e \
 COPY --from=build --chown=zenith:zenith /home/circleci/project/target/release/pageserver /usr/local/bin
 COPY --from=build --chown=zenith:zenith /home/circleci/project/target/release/safekeeper /usr/local/bin
 COPY --from=build --chown=zenith:zenith /home/circleci/project/target/release/proxy      /usr/local/bin
+# COPY --from=build --chown=zenith:zenith /usr/local/cargo/bin/tokio-console               /usr/local/bin
 
 COPY --from=pg-build /pg/tmp_install/         /usr/local/
 COPY --from=pg-build /postgres_install.tar.gz /data/

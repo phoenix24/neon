@@ -491,6 +491,7 @@ async fn loop_step<
     max_concurrent_sync: NonZeroUsize,
     max_sync_errors: NonZeroU32,
 ) -> LoopStep {
+    info!("loop step started");
     let max_concurrent_sync = max_concurrent_sync.get();
     let mut next_tasks = Vec::new();
 
@@ -563,7 +564,7 @@ async fn loop_step<
                 .insert(timeline_id, state_update);
         }
     }
-
+    info!("loop step finished");
     LoopStep::SyncStatusUpdates(new_timeline_states)
 }
 
@@ -576,6 +577,7 @@ async fn process_task<
     task: SyncTask,
     max_sync_errors: NonZeroU32,
 ) -> Option<TimelineSyncStatusUpdate> {
+    info!("process task started");
     if task.retries > max_sync_errors.get() {
         error!(
             "Evicting task {:?} that failed {} times, exceeding the error threshold",
@@ -593,14 +595,16 @@ async fn process_task<
             "Waiting {} seconds before starting the task",
             seconds_to_wait
         );
+        info!("process task sleeping {}", seconds_to_wait);
         tokio::time::sleep(Duration::from_secs_f64(seconds_to_wait)).await;
+        info!("process task resuming from sleep");
     }
 
     let remote_index = &remote_assets.1;
 
     let sync_start = Instant::now();
     let sync_name = task.kind.sync_name();
-    match task.kind {
+    let r = match task.kind {
         SyncKind::Download(download_data) => {
             let download_result = download_timeline(
                 conf,
@@ -648,7 +652,9 @@ async fn process_task<
             register_sync_status(sync_start, sync_name, sync_status);
             None
         }
-    }
+    };
+    info!("process task finished");
+    r
 }
 
 fn schedule_first_sync_tasks(
@@ -788,7 +794,9 @@ async fn fetch_full_index<
     timeline_dir: &Path,
     id: ZTenantTimelineId,
 ) -> anyhow::Result<RemoteTimeline> {
+    info!("fetch_full_index pre index read");
     let index_read = index.read().await;
+    info!("fetch_full_index post index read");
     let full_index = match index_read.timeline_entry(&id).map(|e| e.inner()) {
         None => bail!("Timeline not found for sync id {}", id),
         Some(TimelineIndexEntryInner::Full(_)) => {
@@ -820,11 +828,13 @@ async fn fetch_full_index<
         }
     };
     drop(index_read); // tokio rw lock is not upgradeable
+    info!("fetch_full_index pre index write");
     index
         .write()
         .await
         .upgrade_timeline_entry(&id, full_index.clone())
         .context("cannot upgrade timeline entry in remote index")?;
+    info!("fetch_full_index post index write");
     Ok(full_index)
 }
 

@@ -295,19 +295,20 @@ fn walreceiver_main(
         };
 
         if let Some(last_lsn) = status_update {
-            let timeline_remote_consistent_lsn = runtime.block_on(async {
-                remote_index
-                    .read()
-                    .await
-                    // here we either do not have this timeline in remote index
-                    // or there were no checkpoints for it yet
-                    .timeline_entry(&ZTenantTimelineId {
-                        tenant_id,
-                        timeline_id,
-                    })
-                    .and_then(|e| e.disk_consistent_lsn())
-                    .unwrap_or(Lsn(0)) // no checkpoint was uploaded
-            });
+            let timeline_remote_consistent_lsn = Lsn(0);
+            // let timeline_remote_consistent_lsn = runtime.block_on(async {
+            //     remote_index
+            //         .read()
+            //         .await
+            //         // here we either do not have this timeline in remote index
+            //         // or there were no checkpoints for it yet
+            //         .timeline_entry(&ZTenantTimelineId {
+            //             tenant_id,
+            //             timeline_id,
+            //         })
+            //         .and_then(|e| e.disk_consistent_lsn())
+            //         .unwrap_or(Lsn(0)) // no checkpoint was uploaded
+            // });
 
             // The last LSN we processed. It is not guaranteed to survive pageserver crash.
             let write_lsn = u64::from(last_lsn);
