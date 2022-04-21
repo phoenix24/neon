@@ -20,15 +20,13 @@ use std::str;
 use std::str::FromStr;
 use std::sync::{Arc, RwLockReadGuard};
 use tracing::*;
-use zenith_metrics::{register_histogram_vec, HistogramVec};
-use zenith_utils::auth::{self, JwtAuth};
-use zenith_utils::auth::{Claims, Scope};
-use zenith_utils::lsn::Lsn;
-use zenith_utils::postgres_backend::is_socket_read_timed_out;
-use zenith_utils::postgres_backend::PostgresBackend;
-use zenith_utils::postgres_backend::{self, AuthType};
-use zenith_utils::pq_proto::{BeMessage, FeMessage, RowDescriptor, SINGLE_COL_ROWDESC};
-use zenith_utils::zid::{ZTenantId, ZTimelineId};
+use utils::{
+    auth::{self, Claims, JwtAuth, Scope},
+    lsn::Lsn,
+    postgres_backend::{self, is_socket_read_timed_out, AuthType, PostgresBackend},
+    pq_proto::{BeMessage, FeMessage, RowDescriptor, SINGLE_COL_ROWDESC},
+    zid::{ZTenantId, ZTimelineId},
+};
 
 use crate::basebackup;
 use crate::config::PageServerConf;
@@ -41,6 +39,7 @@ use crate::thread_mgr;
 use crate::thread_mgr::ThreadKind;
 use crate::walreceiver;
 use crate::CheckpointConfig;
+use metrics::{register_histogram_vec, HistogramVec};
 
 // Wrapped in libpq CopyData
 enum PagestreamFeMessage {
@@ -514,6 +513,7 @@ impl PageServerHandler {
     ) -> anyhow::Result<()> {
         let span = info_span!("basebackup", timeline = %timelineid, tenant = %tenantid, lsn = field::Empty);
         let _enter = span.enter();
+        info!("starting");
 
         // check that the timeline exists
         let timeline = tenant_mgr::get_timeline_for_tenant_load(tenantid, timelineid)
@@ -536,7 +536,7 @@ impl PageServerHandler {
             basebackup.send_tarball()?;
         }
         pgb.write_message(&BeMessage::CopyDone)?;
-        debug!("CopyDone sent!");
+        info!("done");
 
         Ok(())
     }
@@ -712,6 +712,26 @@ impl postgres_backend::Handler for PageServerHandler {
                 Some(result.elapsed.as_millis().to_string().as_bytes()),
             ]))?
             .write_message(&BeMessage::CommandComplete(b"SELECT 1"))?;
+        } else if query_string.starts_with("compact ") {
+            // Run compaction immediately on given timeline.
+            // FIXME This is just for tests. Don't expect this to be exposed to
+            // the users or the api.
+
+            // compact <tenant_id> <timeline_id>
+            let re = Regex::new(r"^compact ([[:xdigit:]]+)\s([[:xdigit:]]+)($|\s)?").unwrap();
+
+            let caps = re
+                .captures(query_string)
+                .with_context(|| format!("Invalid compact: '{}'", query_string))?;
+
+            let tenantid = ZTenantId::from_str(caps.get(1).unwrap().as_str())?;
+            let timelineid = ZTimelineId::from_str(caps.get(2).unwrap().as_str())?;
+            let timeline = tenant_mgr::get_timeline_for_tenant_load(tenantid, timelineid)
+                .context("Couldn't load timeline")?;
+            timeline.tline.compact()?;
+
+            pgb.write_message_noflush(&SINGLE_COL_ROWDESC)?
+                .write_message_noflush(&BeMessage::CommandComplete(b"SELECT 1"))?;
         } else if query_string.starts_with("checkpoint ") {
             // Run checkpoint immediately on given timeline.
 

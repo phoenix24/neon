@@ -6,7 +6,7 @@
 //! walingest.rs handles a few things like implicit relation creation and extension.
 //! Clarify that)
 //!
-use crate::keyspace::{KeySpace, KeySpaceAccum, TARGET_FILE_SIZE_BYTES};
+use crate::keyspace::{KeyPartitioning, KeySpace, KeySpaceAccum};
 use crate::reltag::{RelTag, SlruKind};
 use crate::repository::*;
 use crate::repository::{Repository, Timeline};
@@ -18,11 +18,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::sync::{Arc, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLockReadGuard};
 use tracing::{debug, error, trace, warn};
-use zenith_utils::bin_ser::BeSer;
-use zenith_utils::lsn::AtomicLsn;
-use zenith_utils::lsn::Lsn;
+use utils::{bin_ser::BeSer, lsn::Lsn};
 
 /// Block number within a relation or SLRU. This matches PostgreSQL's BlockNumber type.
 pub type BlockNumber = u32;
@@ -38,7 +36,7 @@ where
     pub tline: Arc<R::Timeline>,
 
     /// When did we last calculate the partitioning?
-    last_partitioning: AtomicLsn,
+    partitioning: Mutex<(KeyPartitioning, Lsn)>,
 
     /// Configuration: how often should the partitioning be recalculated.
     repartition_threshold: u64,
@@ -51,7 +49,7 @@ impl<R: Repository> DatadirTimeline<R> {
     pub fn new(tline: Arc<R::Timeline>, repartition_threshold: u64) -> Self {
         DatadirTimeline {
             tline,
-            last_partitioning: AtomicLsn::new(0),
+            partitioning: Mutex::new((KeyPartitioning::new(), Lsn(0))),
             current_logical_size: AtomicIsize::new(0),
             repartition_threshold,
         }
@@ -387,6 +385,19 @@ impl<R: Repository> DatadirTimeline<R> {
         result.add_key(CHECKPOINT_KEY);
 
         Ok(result.to_keyspace())
+    }
+
+    pub fn repartition(&self, lsn: Lsn, partition_size: u64) -> Result<(KeyPartitioning, Lsn)> {
+        let mut partitioning_guard = self.partitioning.lock().unwrap();
+        if partitioning_guard.1 == Lsn(0)
+            || lsn.0 - partitioning_guard.1 .0 > self.repartition_threshold
+        {
+            let keyspace = self.collect_keyspace(lsn)?;
+            let partitioning = keyspace.partition(partition_size);
+            *partitioning_guard = (partitioning, lsn);
+            return Ok((partitioning_guard.0.clone(), lsn));
+        }
+        Ok((partitioning_guard.0.clone(), partitioning_guard.1))
     }
 }
 
@@ -767,7 +778,6 @@ impl<'a, R: Repository> DatadirModification<'a, R> {
     pub fn commit(self) -> Result<()> {
         let writer = self.tline.tline.writer();
 
-        let last_partitioning = self.tline.last_partitioning.load();
         let pending_nblocks = self.pending_nblocks;
 
         for (key, value) in self.pending_updates {
@@ -778,15 +788,6 @@ impl<'a, R: Repository> DatadirModification<'a, R> {
         }
 
         writer.finish_write(self.lsn);
-
-        if last_partitioning == Lsn(0)
-            || self.lsn.0 - last_partitioning.0 > self.tline.repartition_threshold
-        {
-            let keyspace = self.tline.collect_keyspace(self.lsn)?;
-            let partitioning = keyspace.partition(TARGET_FILE_SIZE_BYTES);
-            self.tline.tline.hint_partitioning(partitioning, self.lsn)?;
-            self.tline.last_partitioning.store(self.lsn);
-        }
 
         if pending_nblocks != 0 {
             self.tline.current_logical_size.fetch_add(
@@ -1210,10 +1211,10 @@ pub fn key_to_slru_block(key: Key) -> Result<(SlruKind, u32, BlockNumber)> {
 #[cfg(test)]
 pub fn create_test_timeline<R: Repository>(
     repo: R,
-    timeline_id: zenith_utils::zid::ZTimelineId,
+    timeline_id: utils::zid::ZTimelineId,
 ) -> Result<Arc<crate::DatadirTimeline<R>>> {
     let tline = repo.create_empty_timeline(timeline_id, Lsn(8))?;
-    let tline = DatadirTimeline::new(tline, crate::layered_repository::tests::TEST_FILE_SIZE / 10);
+    let tline = DatadirTimeline::new(tline, 256 * 1024);
     let mut m = tline.begin_modification(Lsn(8));
     m.init_empty()?;
     m.commit()?;

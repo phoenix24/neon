@@ -1,9 +1,9 @@
-use crate::keyspace::KeyPartitioning;
 use crate::layered_repository::metadata::TimelineMetadata;
 use crate::remote_storage::RemoteIndex;
 use crate::walrecord::ZenithWalRecord;
 use crate::CheckpointConfig;
 use anyhow::{bail, Result};
+use byteorder::{ByteOrder, BE};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -11,8 +11,10 @@ use std::fmt::Display;
 use std::ops::{AddAssign, Range};
 use std::sync::{Arc, RwLockReadGuard};
 use std::time::Duration;
-use zenith_utils::lsn::{Lsn, RecordLsn};
-use zenith_utils::zid::ZTimelineId;
+use utils::{
+    lsn::{Lsn, RecordLsn},
+    zid::ZTimelineId,
+};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 /// Key used in the Repository kv-store.
@@ -27,6 +29,8 @@ pub struct Key {
     pub field5: u8,
     pub field6: u32,
 }
+
+pub const KEY_SIZE: usize = 18;
 
 impl Key {
     /// 'field2' is used to store tablespaceid for relations and small enum numbers for other relish.
@@ -75,7 +79,7 @@ impl Key {
         key
     }
 
-    pub fn from_array(b: [u8; 18]) -> Self {
+    pub fn from_slice(b: &[u8]) -> Self {
         Key {
             field1: b[0],
             field2: u32::from_be_bytes(b[1..5].try_into().unwrap()),
@@ -84,6 +88,15 @@ impl Key {
             field5: b[13],
             field6: u32::from_be_bytes(b[14..18].try_into().unwrap()),
         }
+    }
+
+    pub fn write_to_byte_slice(&self, buf: &mut [u8]) {
+        buf[0] = self.field1;
+        BE::write_u32(&mut buf[1..5], self.field2);
+        BE::write_u32(&mut buf[5..9], self.field3);
+        BE::write_u32(&mut buf[9..13], self.field4);
+        buf[13] = self.field5;
+        BE::write_u32(&mut buf[14..18], self.field6);
     }
 }
 
@@ -184,14 +197,12 @@ impl Value {
 
 #[derive(Clone, Copy, Debug)]
 pub enum TimelineSyncStatusUpdate {
-    Uploaded,
     Downloaded,
 }
 
 impl Display for TimelineSyncStatusUpdate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            TimelineSyncStatusUpdate::Uploaded => "Uploaded",
             TimelineSyncStatusUpdate::Downloaded => "Downloaded",
         };
         f.write_str(s)
@@ -254,8 +265,10 @@ pub trait Repository: Send + Sync {
         checkpoint_before_gc: bool,
     ) -> Result<GcResult>;
 
-    /// perform one compaction iteration.
-    /// this function is periodically called by compactor thread.
+    /// Perform one compaction iteration.
+    /// This function is periodically called by compactor thread.
+    /// Also it can be explicitly requested per timeline through page server
+    /// api's 'compact' command.
     fn compaction_iteration(&self) -> Result<()>;
 
     /// detaches locally available timeline by stopping all threads and removing all the data.
@@ -386,19 +399,6 @@ pub trait Timeline: Send + Sync {
     fn checkpoint(&self, cconf: CheckpointConfig) -> Result<()>;
 
     ///
-    /// Tell the implementation how the keyspace should be partitioned.
-    ///
-    /// FIXME: This is quite a hack. The code in pgdatadir_mapping.rs knows
-    /// which keys exist and what is the logical grouping of them. That's why
-    /// the code there (and in keyspace.rs) decides the partitioning, not the
-    /// layered_repository.rs implementation. That's a layering violation:
-    /// the Repository implementation ought to be responsible for the physical
-    /// layout, but currently it's more convenient to do it in pgdatadir_mapping.rs
-    /// rather than in layered_repository.rs.
-    ///
-    fn hint_partitioning(&self, partitioning: KeyPartitioning, lsn: Lsn) -> Result<()>;
-
-    ///
     /// Check that it is valid to request operations with that lsn.
     fn check_lsn_is_in_scope(
         &self,
@@ -446,7 +446,7 @@ pub mod repo_harness {
 
     use super::*;
     use hex_literal::hex;
-    use zenith_utils::zid::ZTenantId;
+    use utils::zid::ZTenantId;
 
     pub const TIMELINE_ID: ZTimelineId =
         ZTimelineId::from_array(hex!("11223344556677881122334455667788"));
@@ -596,7 +596,7 @@ mod tests {
     use lazy_static::lazy_static;
 
     lazy_static! {
-        static ref TEST_KEY: Key = Key::from_array(hex!("110000222233333333444444445500000001"));
+        static ref TEST_KEY: Key = Key::from_slice(&hex!("110000222233333333444444445500000001"));
     }
 
     #[test]

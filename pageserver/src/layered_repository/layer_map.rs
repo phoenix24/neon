@@ -19,13 +19,13 @@ use lazy_static::lazy_static;
 use num_traits::identities::{One, Zero};
 use num_traits::{Bounded, Num, Signed};
 use rstar::{RTree, RTreeObject, AABB};
+use metrics::{register_int_gauge, IntGauge};
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 use std::sync::Arc;
 use tracing::*;
-use zenith_metrics::{register_int_gauge, IntGauge};
-use zenith_utils::lsn::Lsn;
+use utils::lsn::Lsn;
 
 lazy_static! {
     static ref NUM_ONDISK_LAYERS: IntGauge =
@@ -341,11 +341,11 @@ impl LayerMap {
         NUM_ONDISK_LAYERS.dec();
     }
 
-    /// Is there a newer image layer for given segment?
+    /// Is there a newer image layer for given key-range?
     ///
     /// This is used for garbage collection, to determine if an old layer can
     /// be deleted.
-    /// We ignore segments newer than disk_consistent_lsn because they will be removed at restart
+    /// We ignore layers newer than disk_consistent_lsn because they will be removed at restart
     /// We also only look at historic layers
     //#[allow(dead_code)]
     pub fn newer_image_layer_exists(
@@ -393,22 +393,6 @@ impl LayerMap {
             }
         }
     }
-
-    /// Is there any layer for given segment that is alive at the lsn?
-    ///
-    /// This is a public wrapper for SegEntry fucntion,
-    /// used for garbage collection, to determine if some alive layer
-    /// exists at the lsn. If so, we shouldn't delete a newer dropped layer
-    /// to avoid incorrectly making it visible.
-    /*
-        pub fn layer_exists_at_lsn(&self, seg: SegmentTag, lsn: Lsn) -> Result<bool> {
-            Ok(if let Some(segentry) = self.historic_layers.get(&seg) {
-                segentry.exists_at_lsn(seg, lsn)?.unwrap_or(false)
-            } else {
-                false
-            })
-        }
-    */
 
     pub fn iter_historic_layers(&self) -> Box<dyn Iterator<Item = Arc<dyn Layer>> + '_> {
         Box::new(self.historic_layers.iter().map(|e| e.layer.clone()))
@@ -548,10 +532,22 @@ impl LayerMap {
 
     /// debugging function to print out the contents of the layer map
     #[allow(unused)]
-    pub fn dump(&self) -> Result<()> {
+    pub fn dump(&self, verbose: bool) -> Result<()> {
         println!("Begin dump LayerMap");
+
+        println!("open_layer:");
+        if let Some(open_layer) = &self.open_layer {
+            open_layer.dump(verbose)?;
+        }
+
+        println!("frozen_layers:");
+        for frozen_layer in self.frozen_layers.iter() {
+            frozen_layer.dump(verbose)?;
+        }
+
+        println!("historic_layers:");
         for e in self.historic_layers.iter() {
-            e.layer.dump()?;
+            e.layer.dump(verbose)?;
         }
         println!("End dump LayerMap");
         Ok(())

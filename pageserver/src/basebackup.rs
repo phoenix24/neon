@@ -12,20 +12,20 @@
 //!
 use anyhow::{ensure, Context, Result};
 use bytes::{BufMut, BytesMut};
-use log::*;
 use std::fmt::Write as FmtWrite;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tar::{Builder, EntryType, Header};
+use tracing::*;
 
 use crate::reltag::SlruKind;
 use crate::repository::Timeline;
 use crate::DatadirTimelineImpl;
 use postgres_ffi::xlog_utils::*;
 use postgres_ffi::*;
-use zenith_utils::lsn::Lsn;
+use utils::lsn::Lsn;
 
 /// This is short-living object only for the time of tarball creation,
 /// created mostly to avoid passing a lot of parameters between various functions
@@ -65,6 +65,7 @@ impl<'a> Basebackup<'a> {
         // prev_lsn to Lsn(0) if we cannot provide the correct value.
         let (backup_prev, backup_lsn) = if let Some(req_lsn) = req_lsn {
             // Backup was requested at a particular LSN. Wait for it to arrive.
+            info!("waiting for {}", req_lsn);
             timeline.tline.wait_lsn(req_lsn)?;
 
             // If the requested point is the end of the timeline, we can

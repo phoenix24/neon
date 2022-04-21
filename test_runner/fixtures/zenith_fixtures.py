@@ -27,20 +27,21 @@ from dataclasses import dataclass
 
 # Type-related stuff
 from psycopg2.extensions import connection as PgConnection
+from psycopg2.extensions import make_dsn, parse_dsn
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, TypeVar, cast, Union, Tuple
 from typing_extensions import Literal
 
 import requests
 import backoff  # type: ignore
 
-from .utils import (get_self_dir, lsn_from_hex, mkdir_if_needed, subprocess_capture)
+from .utils import (etcd_path, get_self_dir, mkdir_if_needed, subprocess_capture, lsn_from_hex)
 from fixtures.log_helper import log
 """
 This file contains pytest fixtures. A fixture is a test resource that can be
 summoned by placing its name in the test's arguments.
 
-A fixture is created with the decorator @zenfixture, which is a wrapper around
-the standard pytest.fixture with some extra behavior.
+A fixture is created with the decorator @pytest.fixture decorator.
+See docs: https://docs.pytest.org/en/6.2.x/fixture.html
 
 There are several environment variables that can control the running of tests:
 ZENITH_BIN, POSTGRES_DISTRIB_DIR, etc. See README.md for more information.
@@ -122,6 +123,22 @@ def pytest_configure(config):
         top_output_dir = os.path.join(base_dir, DEFAULT_OUTPUT_DIR)
     mkdir_if_needed(top_output_dir)
 
+    # Find the postgres installation.
+    global pg_distrib_dir
+    env_postgres_bin = os.environ.get('POSTGRES_DISTRIB_DIR')
+    if env_postgres_bin:
+        pg_distrib_dir = env_postgres_bin
+    else:
+        pg_distrib_dir = os.path.normpath(os.path.join(base_dir, DEFAULT_POSTGRES_DIR))
+    log.info(f'pg_distrib_dir is {pg_distrib_dir}')
+    if os.getenv("REMOTE_ENV"):
+        # When testing against a remote server, we only need the client binary.
+        if not os.path.exists(os.path.join(pg_distrib_dir, 'bin/psql')):
+            raise Exception('psql not found at "{}"'.format(pg_distrib_dir))
+    else:
+        if not os.path.exists(os.path.join(pg_distrib_dir, 'bin/postgres')):
+            raise Exception('postgres not found at "{}"'.format(pg_distrib_dir))
+
     if os.getenv("REMOTE_ENV"):
         # we are in remote env and do not have zenith binaries locally
         # this is the case for benchmarks run on self-hosted runner
@@ -137,37 +154,19 @@ def pytest_configure(config):
     if not os.path.exists(os.path.join(zenith_binpath, 'pageserver')):
         raise Exception('zenith binaries not found at "{}"'.format(zenith_binpath))
 
-    # Find the postgres installation.
-    global pg_distrib_dir
-    env_postgres_bin = os.environ.get('POSTGRES_DISTRIB_DIR')
-    if env_postgres_bin:
-        pg_distrib_dir = env_postgres_bin
-    else:
-        pg_distrib_dir = os.path.normpath(os.path.join(base_dir, DEFAULT_POSTGRES_DIR))
-    log.info(f'pg_distrib_dir is {pg_distrib_dir}')
-    if not os.path.exists(os.path.join(pg_distrib_dir, 'bin/postgres')):
-        raise Exception('postgres not found at "{}"'.format(pg_distrib_dir))
 
+def shareable_scope(fixture_name, config) -> Literal["session", "function"]:
+    """Return either session of function scope, depending on TEST_SHARED_FIXTURES envvar.
 
-def zenfixture(func: Fn) -> Fn:
+    This function can be used as a scope like this:
+    @pytest.fixture(scope=shareable_scope)
+    def myfixture(...)
+       ...
     """
-    This is a python decorator for fixtures with a flexible scope.
-
-    By default every test function will set up and tear down a new
-    database. In pytest, this is called fixtures "function" scope.
-
-    If the environment variable TEST_SHARED_FIXTURES is set, then all
-    tests will share the same database. State, logs, etc. will be
-    stored in a directory called "shared".
-    """
-
-    scope: Literal['session', 'function'] = \
-        'function' if os.environ.get('TEST_SHARED_FIXTURES') is None else 'session'
-
-    return pytest.fixture(func, scope=scope)
+    return 'function' if os.environ.get('TEST_SHARED_FIXTURES') is None else 'session'
 
 
-@zenfixture
+@pytest.fixture(scope=shareable_scope)
 def worker_seq_no(worker_id: str):
     # worker_id is a pytest-xdist fixture
     # it can be master or gw<number>
@@ -178,7 +177,7 @@ def worker_seq_no(worker_id: str):
     return int(worker_id[2:])
 
 
-@zenfixture
+@pytest.fixture(scope=shareable_scope)
 def worker_base_port(worker_seq_no: int):
     # so we divide ports in ranges of 100 ports
     # so workers have disjoint set of ports for services
@@ -231,97 +230,76 @@ class PortDistributor:
                 'port range configured for test is exhausted, consider enlarging the range')
 
 
-@zenfixture
+@pytest.fixture(scope=shareable_scope)
 def port_distributor(worker_base_port):
     return PortDistributor(base_port=worker_base_port, port_number=WORKER_PORT_NUM)
 
 
 class PgProtocol:
     """ Reusable connection logic """
-    def __init__(self,
-                 host: str,
-                 port: int,
-                 username: Optional[str] = None,
-                 password: Optional[str] = None,
-                 dbname: Optional[str] = None,
-                 schema: Optional[str] = None):
-        self.host = host
-        self.port = port
-        self.username = username
-        self.password = password
-        self.dbname = dbname
-        self.schema = schema
+    def __init__(self, **kwargs):
+        self.default_options = kwargs
 
-    def connstr(self,
-                *,
-                dbname: Optional[str] = None,
-                schema: Optional[str] = None,
-                username: Optional[str] = None,
-                password: Optional[str] = None) -> str:
+    def connstr(self, **kwargs) -> str:
         """
         Build a libpq connection string for the Postgres instance.
         """
+        return str(make_dsn(**self.conn_options(**kwargs)))
 
-        username = username or self.username
-        password = password or self.password
-        dbname = dbname or self.dbname or "postgres"
-        schema = schema or self.schema
-        res = f'host={self.host} port={self.port} dbname={dbname}'
+    def conn_options(self, **kwargs):
+        conn_options = self.default_options.copy()
+        if 'dsn' in kwargs:
+            conn_options.update(parse_dsn(kwargs['dsn']))
+        conn_options.update(kwargs)
 
-        if username:
-            res = f'{res} user={username}'
-
-        if password:
-            res = f'{res} password={password}'
-
-        if schema:
-            res = f"{res} options='-c search_path={schema}'"
-
-        return res
+        # Individual statement timeout in seconds. 2 minutes should be
+        # enough for our tests, but if you need a longer, you can
+        # change it by calling "SET statement_timeout" after
+        # connecting.
+        if 'options' in conn_options:
+            conn_options['options'] = f"-cstatement_timeout=120s " + conn_options['options']
+        else:
+            conn_options['options'] = "-cstatement_timeout=120s"
+        return conn_options
 
     # autocommit=True here by default because that's what we need most of the time
-    def connect(self,
-                *,
-                autocommit=True,
-                dbname: Optional[str] = None,
-                schema: Optional[str] = None,
-                username: Optional[str] = None,
-                password: Optional[str] = None) -> PgConnection:
+    def connect(self, autocommit=True, **kwargs) -> PgConnection:
         """
         Connect to the node.
         Returns psycopg2's connection object.
         This method passes all extra params to connstr.
         """
+        conn = psycopg2.connect(**self.conn_options(**kwargs))
 
-        conn = psycopg2.connect(
-            self.connstr(
-                dbname=dbname,
-                schema=schema,
-                username=username,
-                password=password,
-            ))
         # WARNING: this setting affects *all* tests!
         conn.autocommit = autocommit
         return conn
 
-    async def connect_async(self,
-                            *,
-                            dbname: str = 'postgres',
-                            username: Optional[str] = None,
-                            password: Optional[str] = None) -> asyncpg.Connection:
+    async def connect_async(self, **kwargs) -> asyncpg.Connection:
         """
         Connect to the node from async python.
         Returns asyncpg's connection object.
         """
 
-        conn = await asyncpg.connect(
-            host=self.host,
-            port=self.port,
-            database=dbname,
-            user=username or self.username,
-            password=password,
-        )
-        return conn
+        # asyncpg takes slightly different options than psycopg2. Try
+        # to convert the defaults from the psycopg2 format.
+
+        # The psycopg2 option 'dbname' is called 'database' is asyncpg
+        conn_options = self.conn_options(**kwargs)
+        if 'dbname' in conn_options:
+            conn_options['database'] = conn_options.pop('dbname')
+
+        # Convert options='-c<key>=<val>' to server_settings
+        if 'options' in conn_options:
+            options = conn_options.pop('options')
+            for match in re.finditer('-c(\w*)=(\w*)', options):
+                key = match.group(1)
+                val = match.group(2)
+                if 'server_options' in conn_options:
+                    conn_options['server_settings'].update({key: val})
+                else:
+                    conn_options['server_settings'] = {key: val}
+        return await asyncpg.connect(**conn_options)
 
     def safe_psql(self, query: str, **kwargs: Any) -> List[Any]:
         """
@@ -425,7 +403,8 @@ class ZenithEnvBuilder:
                  num_safekeepers: int = 0,
                  pageserver_auth_enabled: bool = False,
                  rust_log_override: Optional[str] = None,
-                 default_branch_name=DEFAULT_BRANCH_NAME):
+                 default_branch_name=DEFAULT_BRANCH_NAME,
+                 broker: bool = False):
         self.repo_dir = repo_dir
         self.rust_log_override = rust_log_override
         self.port_distributor = port_distributor
@@ -434,6 +413,7 @@ class ZenithEnvBuilder:
         self.num_safekeepers = num_safekeepers
         self.pageserver_auth_enabled = pageserver_auth_enabled
         self.default_branch_name = default_branch_name
+        self.broker = broker
         self.env: Optional[ZenithEnv] = None
 
         self.s3_mock_server: Optional[MockS3Server] = None
@@ -509,6 +489,8 @@ class ZenithEnvBuilder:
             self.env.pageserver.stop(immediate=True)
             if self.s3_mock_server:
                 self.s3_mock_server.kill()
+            if self.env.broker is not None:
+                self.env.broker.stop()
 
 
 class ZenithEnv:
@@ -561,6 +543,16 @@ class ZenithEnv:
             default_tenant_id = '{self.initial_tenant.hex}'
         """)
 
+        self.broker = None
+        if config.broker:
+            # keep etcd datadir inside 'repo'
+            self.broker = Etcd(datadir=os.path.join(self.repo_dir, "etcd"),
+                               port=self.port_distributor.get_port(),
+                               peer_port=self.port_distributor.get_port())
+            toml += textwrap.dedent(f"""
+            broker_endpoints = 'http://127.0.0.1:{self.broker.port}'
+        """)
+
         # Create config for pageserver
         pageserver_port = PageserverPort(
             pg=self.port_distributor.get_port(),
@@ -603,14 +595,17 @@ class ZenithEnv:
         self.zenith_cli.init(toml)
 
     def start(self):
-        # Start up the page server and all the safekeepers
+        # Start up the page server, all the safekeepers and the broker
         self.pageserver.start()
 
         for safekeeper in self.safekeepers:
             safekeeper.start()
 
+        if self.broker is not None:
+            self.broker.start()
+
     def get_safekeeper_connstrs(self) -> str:
-        """ Get list of safekeeper endpoints suitable for wal_acceptors GUC  """
+        """ Get list of safekeeper endpoints suitable for safekeepers GUC  """
         return ','.join([f'localhost:{wa.port.pg}' for wa in self.safekeepers])
 
     @cached_property
@@ -620,7 +615,7 @@ class ZenithEnv:
         return AuthKeys(pub=pub, priv=priv)
 
 
-@zenfixture
+@pytest.fixture(scope=shareable_scope)
 def _shared_simple_env(request: Any, port_distributor) -> Iterator[ZenithEnv]:
     """
     Internal fixture backing the `zenith_simple_env` fixture. If TEST_SHARED_FIXTURES
@@ -1124,10 +1119,10 @@ class ZenithPageserver(PgProtocol):
                  port: PageserverPort,
                  remote_storage: Optional[RemoteStorage] = None,
                  config_override: Optional[str] = None):
-        super().__init__(host='localhost', port=port.pg, username='zenith_admin')
+        super().__init__(host='localhost', port=port.pg, user='zenith_admin')
         self.env = env
         self.running = False
-        self.service_port = port  # do not shadow PgProtocol.port which is just int
+        self.service_port = port
         self.remote_storage = remote_storage
         self.config_override = config_override
 
@@ -1266,7 +1261,7 @@ def pg_bin(test_output_dir: str) -> PgBin:
 
 class VanillaPostgres(PgProtocol):
     def __init__(self, pgdatadir: str, pg_bin: PgBin, port: int):
-        super().__init__(host='localhost', port=port)
+        super().__init__(host='localhost', port=port, dbname='postgres')
         self.pgdatadir = pgdatadir
         self.pg_bin = pg_bin
         self.running = False
@@ -1278,10 +1273,14 @@ class VanillaPostgres(PgProtocol):
         with open(os.path.join(self.pgdatadir, 'postgresql.conf'), 'a') as conf_file:
             conf_file.writelines(options)
 
-    def start(self):
+    def start(self, log_path: Optional[str] = None):
         assert not self.running
         self.running = True
-        self.pg_bin.run_capture(['pg_ctl', '-D', self.pgdatadir, 'start'])
+
+        if log_path is None:
+            log_path = os.path.join(self.pgdatadir, "pg.log")
+
+        self.pg_bin.run_capture(['pg_ctl', '-D', self.pgdatadir, '-l', log_path, 'start'])
 
     def stop(self):
         assert self.running
@@ -1308,10 +1307,57 @@ def vanilla_pg(test_output_dir: str) -> Iterator[VanillaPostgres]:
         yield vanilla_pg
 
 
+class RemotePostgres(PgProtocol):
+    def __init__(self, pg_bin: PgBin, remote_connstr: str):
+        super().__init__(**parse_dsn(remote_connstr))
+        self.pg_bin = pg_bin
+        # The remote server is assumed to be running already
+        self.running = True
+
+    def configure(self, options: List[str]):
+        raise Exception('cannot change configuration of remote Posgres instance')
+
+    def start(self):
+        raise Exception('cannot start a remote Postgres instance')
+
+    def stop(self):
+        raise Exception('cannot stop a remote Postgres instance')
+
+    def get_subdir_size(self, subdir) -> int:
+        # TODO: Could use the server's Generic File Acccess functions if superuser.
+        # See https://www.postgresql.org/docs/14/functions-admin.html#FUNCTIONS-ADMIN-GENFILE
+        raise Exception('cannot get size of a Postgres instance')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        # do nothing
+        pass
+
+
+@pytest.fixture(scope='function')
+def remote_pg(test_output_dir: str) -> Iterator[RemotePostgres]:
+    pg_bin = PgBin(test_output_dir)
+
+    connstr = os.getenv("BENCHMARK_CONNSTR")
+    if connstr is None:
+        raise ValueError("no connstr provided, use BENCHMARK_CONNSTR environment variable")
+
+    with RemotePostgres(pg_bin, connstr) as remote_pg:
+        yield remote_pg
+
+
 class ZenithProxy(PgProtocol):
     def __init__(self, port: int):
-        super().__init__(host="127.0.0.1", username="pytest", password="pytest", port=port)
+        super().__init__(host="127.0.0.1",
+                         user="pytest",
+                         password="pytest",
+                         port=port,
+                         dbname='postgres')
         self.http_port = 7001
+        self.host = "127.0.0.1"
+        self.port = port
         self._popen: Optional[subprocess.Popen[bytes]] = None
 
     def start_static(self, addr="127.0.0.1:5432") -> None:
@@ -1355,13 +1401,13 @@ def static_proxy(vanilla_pg) -> Iterator[ZenithProxy]:
 class Postgres(PgProtocol):
     """ An object representing a running postgres daemon. """
     def __init__(self, env: ZenithEnv, tenant_id: uuid.UUID, port: int):
-        super().__init__(host='localhost', port=port, username='zenith_admin')
-
+        super().__init__(host='localhost', port=port, user='zenith_admin', dbname='postgres')
         self.env = env
         self.running = False
         self.node_name: Optional[str] = None  # dubious, see asserts below
         self.pgdata_dir: Optional[str] = None  # Path to computenode PGDATA
         self.tenant_id = tenant_id
+        self.port = port
         # path to conf is <repo_dir>/pgdatadirs/tenants/<tenant_id>/<node_name>/postgresql.conf
 
     def create(
@@ -1435,7 +1481,7 @@ class Postgres(PgProtocol):
         """ Path to postgresql.conf """
         return os.path.join(self.pg_data_dir_path(), 'postgresql.conf')
 
-    def adjust_for_wal_acceptors(self, wal_acceptors: str) -> 'Postgres':
+    def adjust_for_safekeepers(self, safekeepers: str) -> 'Postgres':
         """
         Adjust instance config for working with wal acceptors instead of
         pageserver (pre-configured by CLI) directly.
@@ -1450,12 +1496,12 @@ class Postgres(PgProtocol):
                 if ("synchronous_standby_names" in cfg_line or
                         # don't ask pageserver to fetch WAL from compute
                         "callmemaybe_connstring" in cfg_line or
-                        # don't repeat wal_acceptors multiple times
+                        # don't repeat safekeepers/wal_acceptors multiple times
                         "wal_acceptors" in cfg_line):
                     continue
                 f.write(cfg_line)
             f.write("synchronous_standby_names = 'walproposer'\n")
-            f.write("wal_acceptors = '{}'\n".format(wal_acceptors))
+            f.write("wal_acceptors = '{}'\n".format(safekeepers))
         return self
 
     def config(self, lines: List[str]) -> 'Postgres':
@@ -1666,6 +1712,7 @@ class Safekeeper:
 class SafekeeperTimelineStatus:
     acceptor_epoch: int
     flush_lsn: str
+    remote_consistent_lsn: str
 
 
 @dataclass
@@ -1689,7 +1736,8 @@ class SafekeeperHttpClient(requests.Session):
         res.raise_for_status()
         resj = res.json()
         return SafekeeperTimelineStatus(acceptor_epoch=resj['acceptor_state']['epoch'],
-                                        flush_lsn=resj['flush_lsn'])
+                                        flush_lsn=resj['flush_lsn'],
+                                        remote_consistent_lsn=resj['remote_consistent_lsn'])
 
     def get_metrics(self) -> SafekeeperMetrics:
         request_result = self.get(f"http://localhost:{self.port}/metrics")
@@ -1708,6 +1756,54 @@ class SafekeeperHttpClient(requests.Session):
                 re.MULTILINE):
             metrics.commit_lsn_inexact[(match.group(1), match.group(2))] = int(match.group(3))
         return metrics
+
+
+@dataclass
+class Etcd:
+    """ An object managing etcd instance """
+    datadir: str
+    port: int
+    peer_port: int
+    handle: Optional[subprocess.Popen[Any]] = None  # handle of running daemon
+
+    def check_status(self):
+        s = requests.Session()
+        s.mount('http://', requests.adapters.HTTPAdapter(max_retries=1))  # do not retry
+        s.get(f"http://localhost:{self.port}/health").raise_for_status()
+
+    def start(self):
+        pathlib.Path(self.datadir).mkdir(exist_ok=True)
+        etcd_full_path = etcd_path()
+        if etcd_full_path is None:
+            raise Exception('etcd not found')
+
+        with open(os.path.join(self.datadir, "etcd.log"), "wb") as log_file:
+            args = [
+                etcd_full_path,
+                f"--data-dir={self.datadir}",
+                f"--listen-client-urls=http://localhost:{self.port}",
+                f"--advertise-client-urls=http://localhost:{self.port}",
+                f"--listen-peer-urls=http://localhost:{self.peer_port}"
+            ]
+            self.handle = subprocess.Popen(args, stdout=log_file, stderr=log_file)
+
+        # wait for start
+        started_at = time.time()
+        while True:
+            try:
+                self.check_status()
+            except Exception as e:
+                elapsed = time.time() - started_at
+                if elapsed > 5:
+                    raise RuntimeError(f"timed out waiting {elapsed:.0f}s for etcd start: {e}")
+                time.sleep(0.5)
+            else:
+                break  # success
+
+    def stop(self):
+        if self.handle is not None:
+            self.handle.terminate()
+            self.handle.wait()
 
 
 def get_test_output_dir(request: Any) -> str:

@@ -11,9 +11,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use zenith_utils::auth::{encode_from_key_file, Claims, Scope};
-use zenith_utils::postgres_backend::AuthType;
-use zenith_utils::zid::{ZNodeId, ZTenantId, ZTenantTimelineId, ZTimelineId};
+use utils::{
+    auth::{encode_from_key_file, Claims, Scope},
+    postgres_backend::AuthType,
+    zid::{ZNodeId, ZTenantId, ZTenantTimelineId, ZTimelineId},
+};
 
 use crate::safekeeper::SafekeeperNode;
 
@@ -56,6 +58,10 @@ pub struct LocalEnv {
     // used to issue tokens during e.g pg start
     #[serde(default)]
     pub private_key_path: PathBuf,
+
+    // A comma separated broker (etcd) endpoints for storage nodes coordination, e.g. 'http://127.0.0.1:2379'.
+    #[serde(default)]
+    pub broker_endpoints: Option<String>,
 
     pub pageserver: PageServerConf,
 

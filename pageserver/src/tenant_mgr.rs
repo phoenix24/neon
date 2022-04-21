@@ -13,14 +13,14 @@ use crate::walredo::PostgresRedoManager;
 use crate::{DatadirTimelineImpl, RepositoryImpl};
 use anyhow::{Context, Result};
 use lazy_static::lazy_static;
-use log::*;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
-use zenith_utils::zid::{ZTenantId, ZTimelineId};
+use tracing::*;
+use utils::zid::{ZTenantId, ZTimelineId};
 
 lazy_static! {
     static ref TENANTS: Mutex<HashMap<ZTenantId, Tenant>> = Mutex::new(HashMap::new());
@@ -95,7 +95,7 @@ pub fn load_local_repo(
 /// Updates tenants' repositories, changing their timelines state in memory.
 pub fn apply_timeline_sync_status_updates(
     conf: &'static PageServerConf,
-    remote_index: RemoteIndex,
+    remote_index: &RemoteIndex,
     sync_status_updates: HashMap<ZTenantId, HashMap<ZTimelineId, TimelineSyncStatusUpdate>>,
 ) {
     if sync_status_updates.is_empty() {
@@ -109,7 +109,7 @@ pub fn apply_timeline_sync_status_updates(
     trace!("Sync status updates: {:?}", sync_status_updates);
 
     for (tenant_id, tenant_timelines_sync_status_updates) in sync_status_updates {
-        let repo = load_local_repo(conf, tenant_id, &remote_index);
+        let repo = load_local_repo(conf, tenant_id, remote_index);
 
         for (timeline_id, timeline_sync_status_update) in tenant_timelines_sync_status_updates {
             match repo.apply_timeline_remote_sync_status_update(timeline_id, timeline_sync_status_update)

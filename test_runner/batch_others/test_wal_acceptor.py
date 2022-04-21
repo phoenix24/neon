@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from multiprocessing import Process, Value
 from pathlib import Path
 from fixtures.zenith_fixtures import PgBin, Postgres, Safekeeper, ZenithEnv, ZenithEnvBuilder, PortDistributor, SafekeeperPort, zenith_binpath, PgProtocol
-from fixtures.utils import lsn_to_hex, mkdir_if_needed, lsn_from_hex
+from fixtures.utils import etcd_path, lsn_to_hex, mkdir_if_needed, lsn_from_hex
 from fixtures.log_helper import log
 from typing import List, Optional, Any
 
@@ -22,10 +22,11 @@ from typing import List, Optional, Any
 # succeed and data is written
 def test_normal_work(zenith_env_builder: ZenithEnvBuilder):
     zenith_env_builder.num_safekeepers = 3
+    zenith_env_builder.broker = True
     env = zenith_env_builder.init_start()
 
-    env.zenith_cli.create_branch('test_wal_acceptors_normal_work')
-    pg = env.postgres.create_start('test_wal_acceptors_normal_work')
+    env.zenith_cli.create_branch('test_safekeepers_normal_work')
+    pg = env.postgres.create_start('test_safekeepers_normal_work')
 
     with closing(pg.connect()) as conn:
         with conn.cursor() as cur:
@@ -55,7 +56,7 @@ def test_many_timelines(zenith_env_builder: ZenithEnvBuilder):
     n_timelines = 3
 
     branch_names = [
-        "test_wal_acceptors_many_timelines_{}".format(tlin) for tlin in range(n_timelines)
+        "test_safekeepers_many_timelines_{}".format(tlin) for tlin in range(n_timelines)
     ]
     # pageserver, safekeeper operate timelines via their ids (can be represented in hex as 'ad50847381e248feaac9876cc71ae418')
     # that's not really human readable, so the branch names are introduced in Zenith CLI.
@@ -107,14 +108,14 @@ def test_many_timelines(zenith_env_builder: ZenithEnvBuilder):
 
             for flush_lsn, commit_lsn in zip(m.flush_lsns, m.commit_lsns):
                 # Invariant. May be < when transaction is in progress.
-                assert commit_lsn <= flush_lsn
+                assert commit_lsn <= flush_lsn, f"timeline_id={timeline_id}, timeline_detail={timeline_detail}, sk_metrics={sk_metrics}"
             # We only call collect_metrics() after a transaction is confirmed by
             # the compute node, which only happens after a consensus of safekeepers
             # has confirmed the transaction. We assume majority consensus here.
             assert (2 * sum(m.last_record_lsn <= lsn
-                            for lsn in m.flush_lsns) > zenith_env_builder.num_safekeepers)
+                            for lsn in m.flush_lsns) > zenith_env_builder.num_safekeepers), f"timeline_id={timeline_id}, timeline_detail={timeline_detail}, sk_metrics={sk_metrics}"
             assert (2 * sum(m.last_record_lsn <= lsn
-                            for lsn in m.commit_lsns) > zenith_env_builder.num_safekeepers)
+                            for lsn in m.commit_lsns) > zenith_env_builder.num_safekeepers), f"timeline_id={timeline_id}, timeline_detail={timeline_detail}, sk_metrics={sk_metrics}"
             timeline_metrics.append(m)
         log.info(f"{message}: {timeline_metrics}")
         return timeline_metrics
@@ -195,8 +196,8 @@ def test_restarts(zenith_env_builder: ZenithEnvBuilder):
     zenith_env_builder.num_safekeepers = n_acceptors
     env = zenith_env_builder.init_start()
 
-    env.zenith_cli.create_branch('test_wal_acceptors_restarts')
-    pg = env.postgres.create_start('test_wal_acceptors_restarts')
+    env.zenith_cli.create_branch('test_safekeepers_restarts')
+    pg = env.postgres.create_start('test_safekeepers_restarts')
 
     # we rely upon autocommit after each statement
     # as waiting for acceptors happens there
@@ -222,7 +223,7 @@ def test_restarts(zenith_env_builder: ZenithEnvBuilder):
 start_delay_sec = 2
 
 
-def delayed_wal_acceptor_start(wa):
+def delayed_safekeeper_start(wa):
     time.sleep(start_delay_sec)
     wa.start()
 
@@ -232,8 +233,8 @@ def test_unavailability(zenith_env_builder: ZenithEnvBuilder):
     zenith_env_builder.num_safekeepers = 2
     env = zenith_env_builder.init_start()
 
-    env.zenith_cli.create_branch('test_wal_acceptors_unavailability')
-    pg = env.postgres.create_start('test_wal_acceptors_unavailability')
+    env.zenith_cli.create_branch('test_safekeepers_unavailability')
+    pg = env.postgres.create_start('test_safekeepers_unavailability')
 
     # we rely upon autocommit after each statement
     # as waiting for acceptors happens there
@@ -247,7 +248,7 @@ def test_unavailability(zenith_env_builder: ZenithEnvBuilder):
     # shutdown one of two acceptors, that is, majority
     env.safekeepers[0].stop()
 
-    proc = Process(target=delayed_wal_acceptor_start, args=(env.safekeepers[0], ))
+    proc = Process(target=delayed_safekeeper_start, args=(env.safekeepers[0], ))
     proc.start()
 
     start = time.time()
@@ -259,7 +260,7 @@ def test_unavailability(zenith_env_builder: ZenithEnvBuilder):
     # for the world's balance, do the same with second acceptor
     env.safekeepers[1].stop()
 
-    proc = Process(target=delayed_wal_acceptor_start, args=(env.safekeepers[1], ))
+    proc = Process(target=delayed_safekeeper_start, args=(env.safekeepers[1], ))
     proc.start()
 
     start = time.time()
@@ -303,8 +304,8 @@ def test_race_conditions(zenith_env_builder: ZenithEnvBuilder, stop_value):
     zenith_env_builder.num_safekeepers = 3
     env = zenith_env_builder.init_start()
 
-    env.zenith_cli.create_branch('test_wal_acceptors_race_conditions')
-    pg = env.postgres.create_start('test_wal_acceptors_race_conditions')
+    env.zenith_cli.create_branch('test_safekeepers_race_conditions')
+    pg = env.postgres.create_start('test_safekeepers_race_conditions')
 
     # we rely upon autocommit after each statement
     # as waiting for acceptors happens there
@@ -326,6 +327,49 @@ def test_race_conditions(zenith_env_builder: ZenithEnvBuilder, stop_value):
     proc.join()
 
 
+# Test that safekeepers push their info to the broker and learn peer status from it
+@pytest.mark.skipif(etcd_path() is None, reason="requires etcd which is not present in PATH")
+def test_broker(zenith_env_builder: ZenithEnvBuilder):
+    zenith_env_builder.num_safekeepers = 3
+    zenith_env_builder.broker = True
+    zenith_env_builder.enable_local_fs_remote_storage()
+    env = zenith_env_builder.init_start()
+
+    env.zenith_cli.create_branch("test_broker", "main")
+    pg = env.postgres.create_start('test_broker')
+    pg.safe_psql("CREATE TABLE t(key int primary key, value text)")
+
+    # learn zenith timeline from compute
+    tenant_id = pg.safe_psql("show zenith.zenith_tenant")[0][0]
+    timeline_id = pg.safe_psql("show zenith.zenith_timeline")[0][0]
+
+    # wait until remote_consistent_lsn gets advanced on all safekeepers
+    clients = [sk.http_client() for sk in env.safekeepers]
+    stat_before = [cli.timeline_status(tenant_id, timeline_id) for cli in clients]
+    log.info(f"statuses is {stat_before}")
+
+    pg.safe_psql("INSERT INTO t SELECT generate_series(1,100), 'payload'")
+    # force checkpoint to advance remote_consistent_lsn
+    with closing(env.pageserver.connect()) as psconn:
+        with psconn.cursor() as pscur:
+            pscur.execute(f"checkpoint {tenant_id} {timeline_id}")
+    # and wait till remote_consistent_lsn propagates to all safekeepers
+    started_at = time.time()
+    while True:
+        stat_after = [cli.timeline_status(tenant_id, timeline_id) for cli in clients]
+        if all(
+                lsn_from_hex(s_after.remote_consistent_lsn) > lsn_from_hex(
+                    s_before.remote_consistent_lsn) for s_after,
+                s_before in zip(stat_after, stat_before)):
+            break
+        elapsed = time.time() - started_at
+        if elapsed > 20:
+            raise RuntimeError(
+                f"timed out waiting {elapsed:.0f}s for remote_consistent_lsn propagation: status before {stat_before}, status current {stat_after}"
+            )
+        time.sleep(0.5)
+
+
 class ProposerPostgres(PgProtocol):
     """Object for running postgres without ZenithEnv"""
     def __init__(self,
@@ -335,7 +379,7 @@ class ProposerPostgres(PgProtocol):
                  tenant_id: uuid.UUID,
                  listen_addr: str,
                  port: int):
-        super().__init__(host=listen_addr, port=port, username='zenith_admin')
+        super().__init__(host=listen_addr, port=port, user='zenith_admin', dbname='postgres')
 
         self.pgdata_dir: str = pgdata_dir
         self.pg_bin: PgBin = pg_bin
@@ -352,7 +396,7 @@ class ProposerPostgres(PgProtocol):
         """ Path to postgresql.conf """
         return os.path.join(self.pgdata_dir, 'postgresql.conf')
 
-    def create_dir_config(self, wal_acceptors: str):
+    def create_dir_config(self, safekeepers: str):
         """ Create dir and config for running --sync-safekeepers """
 
         mkdir_if_needed(self.pg_data_dir_path())
@@ -363,7 +407,7 @@ class ProposerPostgres(PgProtocol):
                 f"zenith.zenith_timeline = '{self.timeline_id.hex}'\n",
                 f"zenith.zenith_tenant = '{self.tenant_id.hex}'\n",
                 f"zenith.page_server_connstring = ''\n",
-                f"wal_acceptors = '{wal_acceptors}'\n",
+                f"wal_acceptors = '{safekeepers}'\n",
                 f"listen_addresses = '{self.listen_addr}'\n",
                 f"port = '{self.port}'\n",
             ]
@@ -648,7 +692,7 @@ def test_replace_safekeeper(zenith_env_builder: ZenithEnvBuilder):
     env.safekeepers[3].stop()
     active_safekeepers = [1, 2, 3]
     pg = env.postgres.create('test_replace_safekeeper')
-    pg.adjust_for_wal_acceptors(safekeepers_guc(env, active_safekeepers))
+    pg.adjust_for_safekeepers(safekeepers_guc(env, active_safekeepers))
     pg.start()
 
     # learn zenith timeline from compute
@@ -688,7 +732,7 @@ def test_replace_safekeeper(zenith_env_builder: ZenithEnvBuilder):
     pg.stop_and_destroy().create('test_replace_safekeeper')
     active_safekeepers = [2, 3, 4]
     env.safekeepers[3].start()
-    pg.adjust_for_wal_acceptors(safekeepers_guc(env, active_safekeepers))
+    pg.adjust_for_safekeepers(safekeepers_guc(env, active_safekeepers))
     pg.start()
 
     execute_payload(pg)

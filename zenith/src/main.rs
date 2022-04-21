@@ -9,18 +9,20 @@ use pageserver::config::defaults::{
     DEFAULT_HTTP_LISTEN_ADDR as DEFAULT_PAGESERVER_HTTP_ADDR,
     DEFAULT_PG_LISTEN_ADDR as DEFAULT_PAGESERVER_PG_ADDR,
 };
-use std::collections::{BTreeSet, HashMap};
-use std::process::exit;
-use std::str::FromStr;
-use walkeeper::defaults::{
+use safekeeper::defaults::{
     DEFAULT_HTTP_LISTEN_PORT as DEFAULT_SAFEKEEPER_HTTP_PORT,
     DEFAULT_PG_LISTEN_PORT as DEFAULT_SAFEKEEPER_PG_PORT,
 };
-use zenith_utils::auth::{Claims, Scope};
-use zenith_utils::lsn::Lsn;
-use zenith_utils::postgres_backend::AuthType;
-use zenith_utils::zid::{ZNodeId, ZTenantId, ZTenantTimelineId, ZTimelineId};
-use zenith_utils::GIT_VERSION;
+use std::collections::{BTreeSet, HashMap};
+use std::process::exit;
+use std::str::FromStr;
+use utils::{
+    auth::{Claims, Scope},
+    lsn::Lsn,
+    postgres_backend::AuthType,
+    zid::{ZNodeId, ZTenantId, ZTenantTimelineId, ZTimelineId},
+    GIT_VERSION,
+};
 
 use pageserver::timelines::TimelineInfo;
 
@@ -550,7 +552,7 @@ fn handle_timeline(timeline_match: &ArgMatches, env: &mut local_env::LocalEnv) -
             let tenant_id = get_tenant_id(create_match, env)?;
             let new_branch_name = create_match
                 .value_of("branch-name")
-                .ok_or(anyhow!("No branch name provided"))?;
+                .ok_or_else(|| anyhow!("No branch name provided"))?;
             let timeline = pageserver
                 .timeline_create(tenant_id, None, None, None)?
                 .ok_or_else(|| anyhow!("Failed to create new timeline for tenant {}", tenant_id))?;
@@ -571,7 +573,7 @@ fn handle_timeline(timeline_match: &ArgMatches, env: &mut local_env::LocalEnv) -
             let tenant_id = get_tenant_id(branch_match, env)?;
             let new_branch_name = branch_match
                 .value_of("branch-name")
-                .ok_or(anyhow!("No branch name provided"))?;
+                .ok_or_else(|| anyhow!("No branch name provided"))?;
             let ancestor_branch_name = branch_match
                 .value_of("ancestor-branch-name")
                 .unwrap_or(DEFAULT_BRANCH_NAME);

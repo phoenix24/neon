@@ -3,13 +3,11 @@ members = [
     "compute_tools",
     "control_plane",
     "pageserver",
-    "postgres_ffi",
     "proxy",
-    "walkeeper",
+    "safekeeper",
     "workspace_hack",
     "zenith",
-    "zenith_metrics",
-    "zenith_utils",
+    "libs/*",
 ]
 
 [profile.release]
@@ -17,7 +15,7 @@ members = [
 # Besides, debug info should not affect the performance.
 debug = true
 
-# This is only needed for proxy's tests
-# TODO: we should probably fork tokio-postgres-rustls instead
+# This is only needed for proxy's tests.
+# TODO: we should probably fork `tokio-postgres-rustls` instead.
 [patch.crates-io]
 tokio-postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="2949d98df52587d562986aad155dd4e889e408b7" }

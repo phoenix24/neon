@@ -11,11 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use zenith_utils::connstring::connection_host_port;
-use zenith_utils::lsn::Lsn;
-use zenith_utils::postgres_backend::AuthType;
-use zenith_utils::zid::ZTenantId;
-use zenith_utils::zid::ZTimelineId;
+use utils::{
+    connstring::connection_host_port,
+    lsn::Lsn,
+    postgres_backend::AuthType,
+    zid::{ZTenantId, ZTimelineId},
+};
 
 use crate::local_env::LocalEnv;
 use crate::postgresql_conf::PostgresConf;
@@ -331,14 +332,14 @@ impl PostgresNode {
             // Configure the node to connect to the safekeepers
             conf.append("synchronous_standby_names", "walproposer");
 
-            let wal_acceptors = self
+            let safekeepers = self
                 .env
                 .safekeepers
                 .iter()
                 .map(|sk| format!("localhost:{}", sk.pg_port))
                 .collect::<Vec<String>>()
                 .join(",");
-            conf.append("wal_acceptors", &wal_acceptors);
+            conf.append("wal_acceptors", &safekeepers);
         } else {
             // We only use setup without safekeepers for tests,
             // and don't care about data durability on pageserver,
@@ -420,10 +421,15 @@ impl PostgresNode {
         if let Some(token) = auth_token {
             cmd.env("ZENITH_AUTH_TOKEN", token);
         }
-        let pg_ctl = cmd.status().context("pg_ctl failed")?;
 
-        if !pg_ctl.success() {
-            anyhow::bail!("pg_ctl failed");
+        let pg_ctl = cmd.output().context("pg_ctl failed")?;
+        if !pg_ctl.status.success() {
+            anyhow::bail!(
+                "pg_ctl failed, exit code: {}, stdout: {}, stderr: {}",
+                pg_ctl.status,
+                String::from_utf8_lossy(&pg_ctl.stdout),
+                String::from_utf8_lossy(&pg_ctl.stderr),
+            );
         }
         Ok(())
     }
