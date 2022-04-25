@@ -143,6 +143,7 @@ fn find_end_of_wal_segment(
 ) -> Result<u32> {
     // step back to the beginning of the page to read it in...
     let mut offs: usize = start_offset - start_offset % XLOG_BLCKSZ;
+    let mut skipping_first_contrecord: bool = false;
     let mut contlen: usize = 0;
     let mut xl_crc: u32 = 0;
     let mut crc: u32 = 0;
@@ -154,9 +155,11 @@ fn find_end_of_wal_segment(
     file.seek(SeekFrom::Start(offs as u64))?;
     let mut rec_hdr = [0u8; XLOG_RECORD_CRC_OFFS];
 
+    trace!("find_end_of_wal_segment(data_dir={}, segno={}, tli={}, wal_seg_size={}, start_offset=0x{:x})", data_dir.display(), segno, tli, wal_seg_size, start_offset);
     while offs < wal_seg_size {
         // we are at the beginning of the page; read it in
         if offs % XLOG_BLCKSZ == 0 {
+            trace!("offs=0x{:x}: new page", offs);
             let bytes_read = file.read(&mut buf)?;
             if bytes_read != buf.len() {
                 bail!(
@@ -170,30 +173,53 @@ fn find_end_of_wal_segment(
             let xlp_magic = LittleEndian::read_u16(&buf[0..2]);
             let xlp_info = LittleEndian::read_u16(&buf[2..4]);
             let xlp_rem_len = LittleEndian::read_u32(&buf[XLP_REM_LEN_OFFS..XLP_REM_LEN_OFFS + 4]);
+            trace!(
+                "  xlp_magic=0x{:x}, xlp_info=0x{:x}, xlp_rem_len={}",
+                xlp_magic,
+                xlp_info,
+                xlp_rem_len
+            );
             // this is expected in current usage when valid WAL starts after page header
             if xlp_magic != XLOG_PAGE_MAGIC as u16 {
                 trace!(
-                    "invalid WAL file {}.partial magic {} at {:?}",
+                    "  invalid WAL file {}.partial magic {} at {:?}",
                     file_name,
                     xlp_magic,
                     Lsn(XLogSegNoOffsetToRecPtr(segno, offs as u32, wal_seg_size)),
                 );
             }
             if offs == 0 {
-                offs = XLOG_SIZE_OF_XLOG_LONG_PHD;
+                offs += XLOG_SIZE_OF_XLOG_LONG_PHD;
                 if (xlp_info & XLP_FIRST_IS_CONTRECORD) != 0 {
-                    offs += ((xlp_rem_len + 7) & !7) as usize;
+                    trace!("  first record is contrecord");
+                    skipping_first_contrecord = true;
+                    contlen = xlp_rem_len as usize;
+                    // we will immediately skip to start_offset, so adjust contlen
+                    if offs < start_offset {
+                        assert!(start_offset < XLOG_BLCKSZ);
+                        // TODO: test this case
+                        if offs + contlen <= start_offset {
+                            contlen = 0;
+                            // keep skipping_first_contrecord even if contlen == 0, the flag will become false on the next iteration
+                        } else {
+                            warn!("trying to find_end_of_wal with start_offset ({}) in the middle of the first contrecord (xlp_rem_len={})", start_offset, xlp_rem_len);
+                            contlen -= start_offset - offs;
+                        }
+                    }
+                } else {
+                    trace!("  first record is not contrecord");
                 }
             } else {
                 offs += XLOG_SIZE_OF_XLOG_SHORT_PHD;
             }
             // ... and step forward again if asked
+            trace!("  skipped header to 0x{:x}", offs);
             offs = max(offs, start_offset);
-
         // beginning of the next record
         } else if contlen == 0 {
             let page_offs = offs % XLOG_BLCKSZ;
             let xl_tot_len = LittleEndian::read_u32(&buf[page_offs..page_offs + 4]) as usize;
+            trace!("offs=0x{:x}: new record, xl_tot_len={}", offs, xl_tot_len);
             if xl_tot_len == 0 {
                 info!(
                     "find_end_of_wal_segment reached zeros at {:?}, last records ends at {:?}",
@@ -206,10 +232,25 @@ fn find_end_of_wal_segment(
                 );
                 break; // zeros, reached the end
             }
-            last_valid_rec_pos = offs;
+            if skipping_first_contrecord {
+                skipping_first_contrecord = false;
+                trace!("  first contrecord has been just completed");
+            } else {
+                trace!(
+                    "  updating last_valid_rec_pos: 0x{:x} --> 0x{:x}",
+                    last_valid_rec_pos,
+                    offs
+                );
+                last_valid_rec_pos = offs;
+            }
             offs += 4;
             rec_offs = 4;
             contlen = xl_tot_len - 4;
+            trace!(
+                "  reading rec_hdr[0..4] <-- [0x{:x}; 0x{:x})",
+                page_offs,
+                page_offs + 4
+            );
             rec_hdr[0..4].copy_from_slice(&buf[page_offs..page_offs + 4]);
         } else {
             // we're continuing a record, possibly from previous page.
@@ -218,28 +259,84 @@ fn find_end_of_wal_segment(
 
             // read the rest of the record, or as much as fits on this page.
             let n = min(contlen, pageleft);
+            trace!(
+                "offs=0x{:x}, record continuation, pageleft={}, contlen={}",
+                offs,
+                pageleft,
+                contlen
+            );
             // fill rec_hdr (header up to (but not including) xl_crc field)
+            trace!(
+                "  rec_offs={}, XLOG_RECORD_CRC_OFFS={}, XLOG_SIZE_OF_XLOG_RECORD={}",
+                rec_offs,
+                XLOG_RECORD_CRC_OFFS,
+                XLOG_SIZE_OF_XLOG_RECORD
+            );
             if rec_offs < XLOG_RECORD_CRC_OFFS {
                 let len = min(XLOG_RECORD_CRC_OFFS - rec_offs, n);
+                trace!(
+                    "  reading rec_hdr[{}..{}] <-- [0x{:x}; 0x{:x})",
+                    rec_offs,
+                    rec_offs + len,
+                    page_offs,
+                    page_offs + len
+                );
                 rec_hdr[rec_offs..rec_offs + len].copy_from_slice(&buf[page_offs..page_offs + len]);
             }
+            // TODO: is it possible that the header is split between pages?
             if rec_offs <= XLOG_RECORD_CRC_OFFS && rec_offs + n >= XLOG_SIZE_OF_XLOG_RECORD {
+                // TODO: what if CRC field is on the previous page? Read from rec_hdr, probably.
                 let crc_offs = page_offs - rec_offs + XLOG_RECORD_CRC_OFFS;
                 xl_crc = LittleEndian::read_u32(&buf[crc_offs..crc_offs + 4]);
+                trace!(
+                    "  reading xl_crc: [0x{:x}; 0x{:x}) = 0x{:x}",
+                    crc_offs,
+                    crc_offs + 4,
+                    xl_crc
+                );
                 crc = crc32c_append(0, &buf[crc_offs + 4..page_offs + n]);
+                trace!(
+                    "  initializing crc: [0x{:x}; 0x{:x}); crc = 0x{:x}",
+                    crc_offs + 4,
+                    page_offs + n,
+                    crc
+                );
             } else {
+                let old_crc = crc;
                 crc = crc32c_append(crc, &buf[page_offs..page_offs + n]);
+                trace!(
+                    "  appending to crc: [0x{:x}; 0x{:x}); 0x{:x} --> 0x{:x}",
+                    page_offs,
+                    page_offs + n,
+                    old_crc,
+                    crc
+                );
             }
             rec_offs += n;
             offs += n;
             contlen -= n;
 
             if contlen == 0 {
+                trace!("  record completed at 0x{:x}", offs);
                 crc = crc32c_append(crc, &rec_hdr);
                 offs = (offs + 7) & !7; // pad on 8 bytes boundary */
-                if crc == xl_crc {
+                trace!(
+                    "  padded offs to 0x{:x}, crc is {:x}, expected crc is {:x}",
+                    offs,
+                    crc,
+                    xl_crc
+                );
+                if skipping_first_contrecord {
+                    // do nothing, the flag will go down on next iteration
+                    trace!("  first conrecord has been just completed");
+                } else if crc == xl_crc {
                     // record is valid, advance the result to its end (with
                     // alignment to the next record taken into account)
+                    trace!(
+                        "  updating last_valid_rec_pos: 0x{:x} --> 0x{:x}",
+                        last_valid_rec_pos,
+                        offs
+                    );
                     last_valid_rec_pos = offs;
                 } else {
                     info!(
@@ -251,6 +348,7 @@ fn find_end_of_wal_segment(
             }
         }
     }
+    trace!("last_valid_rec_pos=0x{:x}", last_valid_rec_pos);
     Ok(last_valid_rec_pos as u32)
 }
 
@@ -565,7 +663,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet fixed, needs correct skipping of contrecord"]
     pub fn test_find_end_of_wal_crossing_segment_followed_by_small_one() {
         init_logging();
         test_end_of_wal(
