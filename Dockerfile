@@ -27,7 +27,7 @@ COPY . .
 # Show build caching stats to check if it was used in the end.
 # Has to be the part of the same RUN since cachepot daemon is killed in the end of this RUN, loosing the compilation stats.
 RUN set -e \
-    && sudo -E "PATH=$PATH" mold -run cargo build --release \
+    && sudo -E "PATH=$PATH" "GIT_VERSION=$GIT_VERSION" mold -run cargo build --release \
     && cachepot -s
 
 # Build final image
@@ -49,6 +49,8 @@ RUN set -e \
 COPY --from=build --chown=zenith:zenith /home/circleci/project/target/release/pageserver /usr/local/bin
 COPY --from=build --chown=zenith:zenith /home/circleci/project/target/release/safekeeper /usr/local/bin
 COPY --from=build --chown=zenith:zenith /home/circleci/project/target/release/proxy      /usr/local/bin
+
+RUN /usr/local/bin/pageserver --version
 
 COPY --from=pg-build /pg/tmp_install/         /usr/local/
 COPY --from=pg-build /postgres_install.tar.gz /data/

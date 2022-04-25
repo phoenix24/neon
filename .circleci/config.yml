@@ -445,8 +445,8 @@ jobs:
               --build-arg AWS_ACCESS_KEY_ID="${CACHEPOT_AWS_ACCESS_KEY_ID}" \
               --build-arg AWS_SECRET_ACCESS_KEY="${CACHEPOT_AWS_SECRET_ACCESS_KEY}" \
               --tag neondatabase/neon:${DOCKER_TAG} --tag neondatabase/neon:latest .
-            docker push neondatabase/neon:${DOCKER_TAG}
-            docker push neondatabase/neon:latest
+            # docker push neondatabase/neon:${DOCKER_TAG}
+            # docker push neondatabase/neon:latest
 
   # Build neondatabase/compute-node:latest image and push it to Docker hub
   docker-image-compute:
@@ -683,142 +683,142 @@ jobs:
 workflows:
   build_and_test:
     jobs:
-      - check-codestyle-rust
-      - check-codestyle-python
-      - build-postgres:
-          name: build-postgres-<< matrix.build_type >>
-          matrix:
-            parameters:
-              build_type: ["debug", "release"]
-      - build-neon:
-          name: build-neon-<< matrix.build_type >>
-          matrix:
-            parameters:
-              build_type: ["debug", "release"]
-          requires:
-            - build-postgres-<< matrix.build_type >>
-      - run-pytest:
-          name: pg_regress-tests-<< matrix.build_type >>
-          context: PERF_TEST_RESULT_CONNSTR
-          matrix:
-            parameters:
-              build_type: ["debug", "release"]
-          test_selection: batch_pg_regress
-          needs_postgres_source: true
-          requires:
-            - build-neon-<< matrix.build_type >>
-      - run-pytest:
-          name: other-tests-<< matrix.build_type >>
-          matrix:
-            parameters:
-              build_type: ["debug", "release"]
-          test_selection: batch_others
-          requires:
-            - build-neon-<< matrix.build_type >>
-      - run-pytest:
-          name: benchmarks
-          context: PERF_TEST_RESULT_CONNSTR
-          build_type: release
-          test_selection: performance
-          run_in_parallel: false
-          save_perf_report: true
-          requires:
-            - build-neon-release
-      - coverage-report:
-          # Context passes credentials for gh api
-          context: CI_ACCESS_TOKEN
-          requires:
-            # TODO: consider adding more
-            - other-tests-debug
+      # - check-codestyle-rust
+      # - check-codestyle-python
+      # - build-postgres:
+      #     name: build-postgres-<< matrix.build_type >>
+      #     matrix:
+      #       parameters:
+      #         build_type: ["debug", "release"]
+      # - build-neon:
+      #     name: build-neon-<< matrix.build_type >>
+      #     matrix:
+      #       parameters:
+      #         build_type: ["debug", "release"]
+      #     requires:
+      #       - build-postgres-<< matrix.build_type >>
+      # - run-pytest:
+      #     name: pg_regress-tests-<< matrix.build_type >>
+      #     context: PERF_TEST_RESULT_CONNSTR
+      #     matrix:
+      #       parameters:
+      #         build_type: ["debug", "release"]
+      #     test_selection: batch_pg_regress
+      #     needs_postgres_source: true
+      #     requires:
+      #       - build-neon-<< matrix.build_type >>
+      # - run-pytest:
+      #     name: other-tests-<< matrix.build_type >>
+      #     matrix:
+      #       parameters:
+      #         build_type: ["debug", "release"]
+      #     test_selection: batch_others
+      #     requires:
+      #       - build-neon-<< matrix.build_type >>
+      # - run-pytest:
+      #     name: benchmarks
+      #     context: PERF_TEST_RESULT_CONNSTR
+      #     build_type: release
+      #     test_selection: performance
+      #     run_in_parallel: false
+      #     save_perf_report: true
+      #     requires:
+      #       - build-neon-release
+      # - coverage-report:
+      #     # Context passes credentials for gh api
+      #     context: CI_ACCESS_TOKEN
+      #     requires:
+      #       # TODO: consider adding more
+      #       - other-tests-debug
       - docker-image:
           # Context gives an ability to login
           context: Docker Hub
           # Build image only for commits to main
-          filters:
-            branches:
-              only:
-                - main
-          requires:
-            - pg_regress-tests-release
-            - other-tests-release
-      - docker-image-compute:
-          # Context gives an ability to login
-          context: Docker Hub
-          # Build image only for commits to main
-          filters:
-            branches:
-              only:
-                - main
-          requires:
-            - pg_regress-tests-release
-            - other-tests-release
-      - deploy-staging:
-          # Context gives an ability to login
-          context: Docker Hub
-          # deploy only for commits to main
-          filters:
-            branches:
-              only:
-                - main
-          requires:
-            - docker-image
-      - deploy-staging-proxy:
-          # deploy only for commits to main
-          filters:
-            branches:
-              only:
-                - main
-          requires:
-            - docker-image
+          # filters:
+          #   branches:
+          #     only:
+          #       - main
+          # requires:
+          #   - pg_regress-tests-release
+          #   - other-tests-release
+      # - docker-image-compute:
+      #     # Context gives an ability to login
+      #     context: Docker Hub
+      #     # Build image only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - main
+      #     requires:
+      #       - pg_regress-tests-release
+      #       - other-tests-release
+      # - deploy-staging:
+      #     # Context gives an ability to login
+      #     context: Docker Hub
+      #     # deploy only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - main
+      #     requires:
+      #       - docker-image
+      # - deploy-staging-proxy:
+      #     # deploy only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - main
+      #     requires:
+      #       - docker-image
 
-      - docker-image-release:
-          # Context gives an ability to login
-          context: Docker Hub
-          # Build image only for commits to main
-          filters:
-            branches:
-              only:
-                - release
-          requires:
-            - pg_regress-tests-release
-            - other-tests-release
-      - docker-image-compute-release:
-          # Context gives an ability to login
-          context: Docker Hub
-          # Build image only for commits to main
-          filters:
-            branches:
-              only:
-                - release
-          requires:
-            - pg_regress-tests-release
-            - other-tests-release
-      - deploy-release:
-          # Context gives an ability to login
-          context: Docker Hub
-          # deploy only for commits to main
-          filters:
-            branches:
-              only:
-                - release
-          requires:
-            - docker-image-release
-      - deploy-release-proxy:
-          # deploy only for commits to main
-          filters:
-            branches:
-              only:
-                - release
-          requires:
-            - docker-image-release
-      - remote-ci-trigger:
-          # Context passes credentials for gh api
-          context: CI_ACCESS_TOKEN
-          remote_repo: "neondatabase/cloud"
-          requires:
-            # XXX: Successful build doesn't mean everything is OK, but
-            # the job to be triggered takes so much time to complete (~22 min)
-            # that it's better not to wait for the commented-out steps
-            - build-neon-release
-            # - pg_regress-tests-release
-            # - other-tests-release
+      # - docker-image-release:
+      #     # Context gives an ability to login
+      #     context: Docker Hub
+      #     # Build image only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - release
+      #     requires:
+      #       - pg_regress-tests-release
+      #       - other-tests-release
+      # - docker-image-compute-release:
+      #     # Context gives an ability to login
+      #     context: Docker Hub
+      #     # Build image only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - release
+      #     requires:
+      #       - pg_regress-tests-release
+      #       - other-tests-release
+      # - deploy-release:
+      #     # Context gives an ability to login
+      #     context: Docker Hub
+      #     # deploy only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - release
+      #     requires:
+      #       - docker-image-release
+      # - deploy-release-proxy:
+      #     # deploy only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - release
+      #     requires:
+      #       - docker-image-release
+      # - remote-ci-trigger:
+      #     # Context passes credentials for gh api
+      #     context: CI_ACCESS_TOKEN
+      #     remote_repo: "neondatabase/cloud"
+      #     requires:
+      #       # XXX: Successful build doesn't mean everything is OK, but
+      #       # the job to be triggered takes so much time to complete (~22 min)
+      #       # that it's better not to wait for the commented-out steps
+      #       - build-neon-release
+      #       # - pg_regress-tests-release
+      #       # - other-tests-release
