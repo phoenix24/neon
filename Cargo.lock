@@ -1902,7 +1902,7 @@ dependencies = [
  "libc",
  "log",
  "nix",
- "parking_lot",
+ "parking_lot 0.11.2",
  "symbolic-demangle",
  "tempfile",
  "thiserror",
