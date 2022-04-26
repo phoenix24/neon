@@ -26,7 +26,16 @@ COPY . .
 
 # Show build caching stats to check if it was used in the end.
 # Has to be the part of the same RUN since cachepot daemon is killed in the end of this RUN, loosing the compilation stats.
+RUN  cargo install --git https://github.com/paritytech/cachepot
+ENV RUSTC_WRAPPER=cachepot
+ENV CACHEPOT_NO_DAEMON=1
+ENV CACHEPOT_LOG=debug
+ENV CACHEPOT_START_SERVER=1
+
 RUN set -e \
+    && whoami \
+    && sudo chown -R root:root . \
+    && cachepot --start-coordinator \
     && sudo -E "PATH=$PATH" "GIT_VERSION=$GIT_VERSION" mold -run cargo build --release \
     && cachepot -s
 
