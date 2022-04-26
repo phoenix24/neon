@@ -1,6 +1,6 @@
 # First transient image to build compute_tools binaries
 # NB: keep in sync with rust image version in .circle/config.yml
-FROM zimg/rust:1.58 AS rust-build
+FROM hlinnaka/zimg-test:0.0.1 AS rust-build
 
 ARG CACHEPOT_BUCKET=zenith-rust-cachepot
 ARG AWS_ACCESS_KEY_ID

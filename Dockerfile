@@ -1,5 +1,5 @@
 # Build Postgres
-FROM zimg/rust:1.58 AS pg-build
+FROM hlinnaka/zimg-test:0.0.1 AS pg-build
 WORKDIR /pg
 
 USER root
@@ -14,7 +14,7 @@ RUN set -e \
     && tar -C tmp_install -czf /postgres_install.tar.gz .
 
 # Build zenith binaries
-FROM zimg/rust:1.58 AS build
+FROM hlinnaka/zimg-test:0.0.1 AS build
 ARG GIT_VERSION=local
 
 ARG CACHEPOT_BUCKET=zenith-rust-cachepot
