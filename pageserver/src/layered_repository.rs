@@ -1683,6 +1683,7 @@ impl LayeredTimeline {
             new_delta_path.clone(),
             self.conf.timeline_path(&self.timelineid, &self.tenantid),
         ])?;
+        fail_point!("checkpoint-before-sync");
 
         // Finally, replace the frozen in-memory layer with the new on-disk layers
         {
@@ -1705,6 +1706,7 @@ impl LayeredTimeline {
         // TODO: This perhaps should be done in 'flush_frozen_layers', after flushing
         // *all* the layers, to avoid fsyncing the file multiple times.
         let disk_consistent_lsn = Lsn(frozen_layer.get_lsn_range().end.0 - 1);
+        fail_point!("checkpoint-after-sync");
 
         // If we were able to advance 'disk_consistent_lsn', save it the metadata file.
         // After crash, we will restart WAL streaming and processing from that point.

@@ -106,11 +106,6 @@ def test_backpressure_received_lsn_lag(zenith_env_builder: ZenithEnvBuilder):
     check_thread = threading.Thread(target=check_backpressure, args=(pg, check_stop_event))
     check_thread.start()
 
-    # Configure failpoint to slow down walreceiver ingest
-    with closing(env.pageserver.connect()) as psconn:
-        with psconn.cursor(cursor_factory=psycopg2.extras.DictCursor) as pscur:
-            pscur.execute("failpoints walreceiver-after-ingest=sleep(20)")
-
     # FIXME
     # Wait for the check thread to start
     #

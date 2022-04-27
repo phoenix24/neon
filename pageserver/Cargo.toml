@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 profiling = ["pprof"]
+failpoints = ["fail/failpoints"]
 
 [dependencies]
 chrono = "0.4.19"
