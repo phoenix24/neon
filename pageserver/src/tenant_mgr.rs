@@ -305,7 +305,11 @@ pub fn get_local_timeline_with_load(
     Ok(page_tline)
 }
 
-pub fn detach_timeline(tenant_id: ZTenantId, timeline_id: ZTimelineId) -> anyhow::Result<()> {
+pub fn detach_timeline(
+    conf: &'static PageServerConf,
+    tenant_id: ZTenantId,
+    timeline_id: ZTimelineId,
+) -> anyhow::Result<()> {
     // shutdown the timeline threads (this shuts down the walreceiver)
     thread_mgr::shutdown_threads(None, Some(tenant_id), Some(timeline_id));
 
@@ -319,6 +323,14 @@ pub fn detach_timeline(tenant_id: ZTenantId, timeline_id: ZTimelineId) -> anyhow
         }
         None => bail!("Tenant {tenant_id} not found in local tenant state"),
     }
+
+    let local_timeline_directory = conf.timeline_path(&timeline_id, &tenant_id);
+    std::fs::remove_dir_all(&local_timeline_directory).with_context(|| {
+        format!(
+            "Failed to remove local timeline directory '{}'",
+            local_timeline_directory.display()
+        )
+    })?;
 
     Ok(())
 }
