@@ -8,11 +8,12 @@
 //! Note that last file has `.partial` suffix, that's different from postgres.
 
 use anyhow::{anyhow, bail, Context, Result};
+use tokio::sync::watch::Sender;
 use std::io::{Read, Seek, SeekFrom};
 
 use lazy_static::lazy_static;
 use postgres_ffi::xlog_utils::{
-    find_end_of_wal, IsPartialXLogFileName, IsXLogFileName, XLogFromFileName, XLogSegNo, PG_TLI,
+    find_end_of_wal, IsPartialXLogFileName, IsXLogFileName, XLogFromFileName, XLogSegNo, PG_TLI, XLogSegNoOffsetToRecPtr,
 };
 use std::cmp::min;
 
@@ -149,10 +150,14 @@ pub struct PhysicalStorage {
     /// - points to write_lsn, so no seek is needed for writing
     /// - doesn't point to the end of the segment
     file: Option<File>,
+
+    // TODO: antons put some explanation here
+    segment_complete: Sender<(Lsn, Lsn)>,
+    lsn_persisted: Sender<Lsn>,
 }
 
 impl PhysicalStorage {
-    pub fn new(zttid: &ZTenantTimelineId, conf: &SafeKeeperConf) -> PhysicalStorage {
+    pub fn new(zttid: &ZTenantTimelineId, conf: &SafeKeeperConf, lsn_persisted: Sender<Lsn>, segment_complete: Sender<(Lsn, Lsn)>) -> PhysicalStorage {
         let timeline_dir = conf.timeline_dir(zttid);
         PhysicalStorage {
             metrics: WalStorageMetrics::new(zttid),
@@ -165,6 +170,10 @@ impl PhysicalStorage {
             flush_record_lsn: Lsn(0),
             decoder: WalStreamDecoder::new(Lsn(0)),
             file: None,
+
+            // TODO: antons put some explanation here
+            segment_complete: segment_complete,
+            lsn_persisted: lsn_persisted,
         }
     }
 
@@ -247,11 +256,29 @@ impl PhysicalStorage {
             let (wal_file_path, wal_file_partial_path) =
                 wal_file_paths(&self.timeline_dir, segno, wal_seg_size)?;
             fs::rename(&wal_file_partial_path, &wal_file_path)?;
+
+            let start_lsn = XLogSegNoOffsetToRecPtr(segno, 0, wal_seg_size);
+            let end_lsn = XLogSegNoOffsetToRecPtr(segno + 1, 0, wal_seg_size);
+            self.notify_segment_complete(Lsn(start_lsn), Lsn(end_lsn))?;
         } else {
             // otherwise, file can be reused later
             self.file = Some(file);
         }
 
+        Ok(())
+    }
+
+    fn notify_segment_complete(&self, start_lsn: Lsn, end_lsn: Lsn) -> Result<()> {
+        warn!("## Send notification for segment with start lsn {} last lsn {}", start_lsn, end_lsn);
+    
+        self.segment_complete.send((start_lsn, end_lsn))?;
+        Ok(())
+    }
+
+    fn notify_lsn_persisted(&self, lsn: Lsn) -> Result<()> {
+        warn!("## Send notification for lsn {} persistence", lsn);
+    
+        self.lsn_persisted.send(lsn)?;
         Ok(())
     }
 
@@ -371,6 +398,8 @@ impl Storage for PhysicalStorage {
             let _timer = self.metrics.write_wal_seconds.start_timer();
             self.write_exact(startpos, buf)?;
         }
+
+        self.notify_lsn_persisted(startpos + buf.len().try_into().unwrap())?;
 
         // WAL is written, updating write metrics
         self.metrics.write_wal_bytes.observe(buf.len() as f64);

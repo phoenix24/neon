@@ -20,9 +20,10 @@ use tracing::*;
 
 use crate::{safekeeper::Term, timeline::GlobalTimelines, SafeKeeperConf};
 use utils::{
-    lsn::Lsn,
+     lsn::Lsn,
     zid::{ZNodeId, ZTenantId, ZTenantTimelineId, ZTimelineId},
-};
+ };
+
 
 const RETRY_INTERVAL_MSEC: u64 = 1000;
 const PUSH_INTERVAL_MSEC: u64 = 1000;
@@ -44,10 +45,16 @@ pub struct SafekeeperInfo {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
     pub commit_lsn: Option<Lsn>,
+
+    // TODO: antons remove old s3 lsn when done
     /// LSN up to which safekeeper offloaded WAL to s3.
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
     pub s3_wal_lsn: Option<Lsn>,
+    /// Real LSN for tracking WAL segments in S3
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    pub backup_lsn: Option<Lsn>,
     /// LSN of last checkpoint uploaded by pageserver.
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
@@ -82,6 +89,65 @@ fn timeline_path(zttid: &ZTenantTimelineId) -> String {
 /// Key to per timeline per safekeeper data.
 fn timeline_safekeeper_path(zttid: &ZTenantTimelineId, sk_id: ZNodeId) -> String {
     format!("{}/safekeeper/{}", timeline_path(zttid), sk_id)
+}
+
+/// get a lease with default ttl
+pub fn get_lease(conf: &SafeKeeperConf) -> i64 {
+    info!("Getting a etcd lease {:?}", conf);
+
+    let runtime = runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let y = runtime.block_on(async {
+        let mut c = Client::connect(conf.broker_endpoints.as_ref().unwrap(), None).await.unwrap();
+        c.lease_grant(LEASE_TTL_SEC, None).await.unwrap()
+    });
+
+    y.id()
+}
+
+// create keepalive task with default heatbeat interval
+pub async fn lease_keep_alive(lease_id: i64, conf: SafeKeeperConf) {
+    let mut client = Client::connect(conf.broker_endpoints.as_ref().unwrap(), None).await.unwrap();
+    let (mut keeper, mut ka_stream) = client.lease_keep_alive(lease_id).await.unwrap();
+
+    loop {
+        let push_interval = Duration::from_millis(PUSH_INTERVAL_MSEC);
+
+        keeper
+            .keep_alive()
+            .await
+            .context("failed to send LeaseKeepAliveRequest")
+            .unwrap();
+
+        // TODO: Is this needed?
+        ka_stream
+            .message()
+            .await
+            .context("failed to receive LeaseKeepAliveResponse")
+            .unwrap();
+
+        sleep(push_interval).await;
+    }
+}
+
+/// create an election for a given timeline and wait to become a leader 
+pub async fn become_leader(lease_id: i64, election_name: String, timeline_id: &ZTenantTimelineId, conf: SafeKeeperConf) -> Result<()> {
+    let mut client = Client::connect(conf.broker_endpoints.as_ref().unwrap(), None).await?;
+
+    info!("Electing a leader for {} timeline {}", election_name, timeline_id);
+
+    let campaign_name = format!("{}/{}", timeline_path(timeline_id), election_name);
+    let value = format!("id_{}", conf.my_id);
+
+    let resp = client.campaign(campaign_name, value, lease_id).await?;
+    let leader = resp.leader().unwrap();
+
+    info!("Leader elected for {} on timeline {}. leader id {:?}", election_name, timeline_id, leader.key_str());
+
+    Ok(())
 }
 
 /// Push once in a while data about all active timelines to the broker.

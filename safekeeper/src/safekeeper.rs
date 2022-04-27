@@ -186,9 +186,13 @@ pub struct SafeKeeperState {
     /// Part of WAL acknowledged by quorum and available locally. Always points
     /// to record boundary.
     pub commit_lsn: Lsn,
+
+    // TODO: antons rename this
     /// First LSN not yet offloaded to s3. Useful to persist to avoid finding
     /// out offloading progress on boot.
     pub s3_wal_lsn: Lsn,
+
+    pub backup_lsn: Lsn,
     /// Minimal LSN which may be needed for recovery of some safekeeper (end_lsn
     /// of last record streamed to everyone). Persisting it helps skipping
     /// recovery in walproposer, generally we compute it from peers. In
@@ -211,6 +215,7 @@ pub struct SafeKeeperState {
 pub struct SafekeeperMemState {
     pub commit_lsn: Lsn,
     pub s3_wal_lsn: Lsn, // TODO: keep only persistent version
+    pub backup_lsn: Lsn,
     pub peer_horizon_lsn: Lsn,
     pub remote_consistent_lsn: Lsn,
     pub proposer_uuid: PgUuid,
@@ -233,6 +238,7 @@ impl SafeKeeperState {
             proposer_uuid: [0; 16],
             commit_lsn: Lsn(0),
             s3_wal_lsn: Lsn(0),
+            backup_lsn: Lsn(0),
             peer_horizon_lsn: Lsn(0),
             remote_consistent_lsn: Lsn(0),
             peers: Peers(peers.iter().map(|p| (*p, PeerInfo::new())).collect()),
@@ -538,6 +544,7 @@ where
             inmem: SafekeeperMemState {
                 commit_lsn: state.commit_lsn,
                 s3_wal_lsn: state.s3_wal_lsn,
+                backup_lsn: state.backup_lsn,
                 peer_horizon_lsn: state.peer_horizon_lsn,
                 remote_consistent_lsn: state.remote_consistent_lsn,
                 proposer_uuid: state.proposer_uuid,

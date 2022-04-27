@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 
 use lazy_static::lazy_static;
 use postgres_ffi::xlog_utils::XLogSegNo;
+use tokio::sync::watch;
 
 use std::cmp::{max, min};
 use std::collections::HashMap;
@@ -24,12 +25,13 @@ use utils::{
 use crate::broker::SafekeeperInfo;
 use crate::callmemaybe::{CallmeEvent, SubscriptionStateKey};
 
-use crate::control_file;
+use crate::{control_file, remote_storage};
 use crate::safekeeper::{
     AcceptorProposerMessage, ProposerAcceptorMessage, SafeKeeper, SafeKeeperState,
     SafekeeperMemState,
 };
 use crate::send_wal::HotStandbyFeedback;
+use crate::wal_backup::WalBackup;
 use crate::wal_storage;
 use crate::wal_storage::Storage as wal_storage_iface;
 use crate::SafeKeeperConf;
@@ -101,7 +103,14 @@ impl SharedState {
     ) -> Result<Self> {
         let state = SafeKeeperState::new(zttid, peer_ids);
         let control_store = control_file::FileStorage::create_new(zttid, conf, state)?;
-        let wal_store = wal_storage::PhysicalStorage::new(zttid, conf);
+
+        let segment_complete = watch::channel((Lsn::MAX, Lsn::MAX));
+        let lsn_persisted = watch::channel(Lsn::MAX);
+        let wal_store = wal_storage::PhysicalStorage::new(zttid, conf, lsn_persisted.0, segment_complete.0);
+
+        let remote_storage = remote_storage::create(conf.remote_storage_config.as_ref(), conf.timeline_dir(zttid))?;
+        let _wal_backup = WalBackup::create(remote_storage, conf, zttid, segment_complete.1, lsn_persisted.1);
+
         let sk = SafeKeeper::new(zttid.timeline_id, control_store, wal_store)?;
 
         Ok(Self {
@@ -119,7 +128,12 @@ impl SharedState {
     /// If file doesn't exist, bails out.
     fn restore(conf: &SafeKeeperConf, zttid: &ZTenantTimelineId) -> Result<Self> {
         let control_store = control_file::FileStorage::restore_new(zttid, conf)?;
-        let wal_store = wal_storage::PhysicalStorage::new(zttid, conf);
+
+        let segment_complete = watch::channel((Lsn(0), Lsn(0)));
+        let lsn_persisted = watch::channel(Lsn::MAX);
+        let wal_store = wal_storage::PhysicalStorage::new(zttid, conf, lsn_persisted.0,segment_complete.0);
+        let remote_storage = remote_storage::create(conf.remote_storage_config.as_ref(), conf.timeline_dir(zttid))?;
+        let _wal_backup = WalBackup::restore(remote_storage, conf, zttid, segment_complete.1, lsn_persisted.1);
 
         info!("timeline {} restored", zttid.timeline_id);
 
@@ -426,6 +440,7 @@ impl Timeline {
             // note: this value is not flushed to control file yet and can be lost
             commit_lsn: Some(shared_state.sk.inmem.commit_lsn),
             s3_wal_lsn: Some(shared_state.sk.inmem.s3_wal_lsn),
+            backup_lsn: Some(shared_state.sk.inmem.s3_wal_lsn),
             // TODO: rework feedbacks to avoid max here
             remote_consistent_lsn: Some(max(
                 shared_state.get_replicas_state().remote_consistent_lsn,

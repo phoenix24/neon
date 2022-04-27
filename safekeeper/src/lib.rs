@@ -1,12 +1,14 @@
 //
 use std::path::PathBuf;
 use std::time::Duration;
+use config::RemoteStorageConfig;
 use url::Url;
 
 use utils::zid::{ZNodeId, ZTenantTimelineId};
 
 pub mod broker;
 pub mod callmemaybe;
+pub mod config;
 pub mod control_file;
 pub mod control_file_upgrade;
 pub mod handler;
@@ -14,10 +16,12 @@ pub mod http;
 pub mod json_ctrl;
 pub mod receive_wal;
 pub mod remove_wal;
+pub mod remote_storage;
 pub mod s3_offload;
 pub mod safekeeper;
 pub mod send_wal;
 pub mod timeline;
+pub mod wal_backup;
 pub mod wal_service;
 pub mod wal_storage;
 
@@ -47,7 +51,12 @@ pub struct SafeKeeperConf {
     pub no_sync: bool,
     pub listen_pg_addr: String,
     pub listen_http_addr: String,
+
+    // TODO antons: remove TTL from this configuration
+    // document group options for wal backup
     pub ttl: Option<Duration>,
+    pub remote_storage_config: Option<RemoteStorageConfig>,
+
     pub recall_period: Duration,
     pub my_id: ZNodeId,
     pub broker_endpoints: Option<Vec<Url>>,
@@ -73,6 +82,7 @@ impl Default for SafeKeeperConf {
             listen_pg_addr: defaults::DEFAULT_PG_LISTEN_ADDR.to_string(),
             listen_http_addr: defaults::DEFAULT_HTTP_LISTEN_ADDR.to_string(),
             ttl: None,
+            remote_storage_config: None,
             recall_period: defaults::DEFAULT_RECALL_PERIOD,
             my_id: ZNodeId(0),
             broker_endpoints: None,

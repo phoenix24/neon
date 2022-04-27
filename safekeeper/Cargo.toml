@@ -32,6 +32,7 @@ etcd-client = "0.8.3"
 tokio-util = { version = "0.7", features = ["io"] }
 rusoto_core = "0.47"
 rusoto_s3 = "0.47"
+async-trait = "0.1"
 
 postgres_ffi = { path = "../libs/postgres_ffi" }
 metrics = { path = "../libs/metrics" }
