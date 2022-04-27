@@ -82,7 +82,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AuthFlow<'_, S, Md5> {
 /// Stream wrapper for handling [SCRAM](crate::scram) auth.
 impl<S: AsyncRead + AsyncWrite + Unpin> AuthFlow<'_, S, Scram<'_>> {
     /// Perform user authentication. Raise an error in case authentication failed.
-    pub async fn authenticate(self) -> Result<(), AuthError> {
+    pub async fn authenticate(self) -> Result<scram::ScramKey, AuthError> {
         // Initial client message contains the chosen auth method's name.
         let msg = self.stream.read_password_message().await?;
         let sasl = sasl::FirstMessage::parse(&msg).ok_or(AuthErrorImpl::MalformedPassword)?;
@@ -93,10 +93,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AuthFlow<'_, S, Scram<'_>> {
         }
 
         let secret = self.state.0;
-        sasl::SaslStream::new(self.stream, sasl.message)
+        let key = sasl::SaslStream::new(self.stream, sasl.message)
             .authenticate(scram::Exchange::new(secret, rand::random, None))
             .await?;
 
-        Ok(())
+        Ok(key)
     }
 }

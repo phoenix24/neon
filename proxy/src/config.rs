@@ -49,10 +49,10 @@ pub struct ProxyConfig {
     pub mgmt_address: SocketAddr,
 
     /// send unauthenticated users to this URI
-    pub redirect_uri: String,
+    pub redirect_uri: reqwest::Url,
 
     /// control plane address where we would check auth.
-    pub auth_endpoint: reqwest::Url,
+    pub cloud_endpoint: Box<dyn crate::cloud::Api + Sync>,
 
     pub tls_config: Option<TlsConfig>,
 }

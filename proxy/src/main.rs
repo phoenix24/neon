@@ -6,33 +6,26 @@
 
 mod auth;
 mod cancellation;
+mod cloud;
 mod compute;
 mod config;
-mod cplane_api;
 mod error;
 mod http;
 mod mgmt;
+mod parse;
 mod proxy;
+mod sasl;
+mod scram;
 mod stream;
 mod waiters;
 
-// Currently SCRAM is only used in tests
-#[cfg(test)]
-mod parse;
-#[cfg(test)]
-mod sasl;
-#[cfg(test)]
-mod scram;
-
 use anyhow::{bail, Context};
 use clap::{App, Arg};
-use config::ProxyConfig;
+use config::{ClientAuthMethod, ProxyConfig, RouterConfig};
 use futures::FutureExt;
 use std::future::Future;
 use tokio::{net::TcpListener, task::JoinError};
 use utils::GIT_VERSION;
-
-use crate::config::{ClientAuthMethod, RouterConfig};
 
 /// Flattens `Result<Result<T>>` into `Result<T>`.
 async fn flatten_err(
@@ -44,7 +37,7 @@ async fn flatten_err(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     metrics::set_common_metrics_prefix("zenith_proxy");
-    let arg_matches = App::new("Zenith proxy/router")
+    let arg_matches = App::new("Neon proxy/router")
         .version(GIT_VERSION)
         .arg(
             Arg::new("proxy")
@@ -147,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         mgmt_address: arg_matches.value_of("mgmt").unwrap().parse()?,
         http_address: arg_matches.value_of("http").unwrap().parse()?,
         redirect_uri: arg_matches.value_of("uri").unwrap().parse()?,
-        auth_endpoint: arg_matches.value_of("auth-endpoint").unwrap().parse()?,
+        cloud_endpoint: cloud::new(arg_matches.value_of("auth-endpoint").unwrap().parse()?)?,
         tls_config,
     }));
 

@@ -1,7 +1,7 @@
 //! User credentials used in authentication.
 
 use super::AuthError;
-use crate::compute::DatabaseInfo;
+use crate::compute;
 use crate::config::ProxyConfig;
 use crate::error::UserFacingError;
 use crate::stream::PqStream;
@@ -18,7 +18,8 @@ pub enum ClientCredsParseError {
 impl UserFacingError for ClientCredsParseError {}
 
 /// Various client credentials which we use for authentication.
-#[derive(Debug, PartialEq, Eq)]
+/// Note that we don't store any kind of client key or password here.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientCredentials {
     pub user: String,
     pub dbname: String,
@@ -47,20 +48,13 @@ impl ClientCredentials {
         self,
         config: &ProxyConfig,
         client: &mut PqStream<impl AsyncRead + AsyncWrite + Unpin>,
-    ) -> Result<DatabaseInfo, AuthError> {
-        use crate::config::ClientAuthMethod::*;
-        use crate::config::RouterConfig::*;
-        match &config.router_config {
-            Static { host, port } => super::handle_static(host.clone(), *port, client, self).await,
-            Dynamic(Mixed) => {
-                if self.user.ends_with("@zenith") {
-                    super::handle_existing_user(config, client, self).await
-                } else {
-                    super::handle_new_user(config, client).await
-                }
-            }
-            Dynamic(Password) => super::handle_existing_user(config, client, self).await,
-            Dynamic(Link) => super::handle_new_user(config, client).await,
+    ) -> Result<compute::NodeInfo, AuthError> {
+        if self.user.ends_with("@zenith") {
+            let cloud = config.cloud_endpoint.as_ref();
+            super::handle_existing_user(cloud, client, self).await
+        } else {
+            let redirect_uri = config.redirect_uri.as_str();
+            super::handle_new_user(redirect_uri, client).await
         }
     }
 }
