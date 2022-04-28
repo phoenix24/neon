@@ -155,6 +155,7 @@ impl<'a, R: Repository> WalIngest<'a, R> {
                     &mut modification,
                     &parsed_xact,
                     info == pg_constants::XLOG_XACT_COMMIT,
+                    lsn,
                 )?;
             } else if info == pg_constants::XLOG_XACT_COMMIT_PREPARED
                 || info == pg_constants::XLOG_XACT_ABORT_PREPARED
@@ -165,6 +166,7 @@ impl<'a, R: Repository> WalIngest<'a, R> {
                     &mut modification,
                     &parsed_xact,
                     info == pg_constants::XLOG_XACT_COMMIT_PREPARED,
+                    lsn,
                 )?;
                 // Remove twophase file. see RemoveTwoPhaseFile() in postgres code
                 trace!(
@@ -617,6 +619,7 @@ impl<'a, R: Repository> WalIngest<'a, R> {
         modification: &mut DatadirModification<R>,
         parsed: &XlXactParsedRecord,
         is_commit: bool,
+        lsn: Lsn,
     ) -> Result<()> {
         // Record update of CLOG pages
         let mut pageno = parsed.xid / pg_constants::CLOG_XACTS_PER_PAGE;
@@ -635,7 +638,10 @@ impl<'a, R: Repository> WalIngest<'a, R> {
                     segno,
                     rpageno,
                     if is_commit {
-                        ZenithWalRecord::ClogSetCommitted { xids: page_xids }
+                        ZenithWalRecord::ClogSetCommitted {
+                            xids: page_xids,
+                            timestamp: parsed.xact_time,
+                        }
                     } else {
                         ZenithWalRecord::ClogSetAborted { xids: page_xids }
                     },
@@ -652,11 +658,15 @@ impl<'a, R: Repository> WalIngest<'a, R> {
             segno,
             rpageno,
             if is_commit {
-                ZenithWalRecord::ClogSetCommitted { xids: page_xids }
+                ZenithWalRecord::ClogSetCommitted {
+                    xids: page_xids,
+                    timestamp: parsed.xact_time,
+                }
             } else {
                 ZenithWalRecord::ClogSetAborted { xids: page_xids }
             },
         )?;
+        info!("PROCESSED {} at {}", parsed.xact_time, lsn);
 
         for xnode in &parsed.xnodes {
             for forknum in pg_constants::MAIN_FORKNUM..=pg_constants::VISIBILITYMAP_FORKNUM {
